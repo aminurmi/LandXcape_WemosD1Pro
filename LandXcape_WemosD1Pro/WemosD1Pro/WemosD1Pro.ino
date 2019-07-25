@@ -17,14 +17,16 @@
 //variables
 const char* ssid     = "Linux_2";
 const char* password = "linuxrulezz";
+const int robiPinCode = 1881;
 int baudrate = 115200;
 int delayToReconnectTry = 15000;
 boolean debugMode = false; //only useful as long as the WEMOS is connected to the PC ;)
 boolean NTPUpdateSuccessful = false;
-double version = 0.45;
+double version = 0.53;
 
 int buttonPressTime = 800; //in ms
-int PWRButtonPressTime = 4000; // in ms
+int PWRButtonPressTime = 2000; // in ms
+int switchBetweenPinsDelay = 3000; // in ms
 
 double batteryVoltage = 0;
 double baseFor1V = 329.9479166;
@@ -142,6 +144,7 @@ static void handleRoot(void){
               <style>\
                 body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
               </style>\
+              <meta http-equiv='Refresh' content='10; url=\\'>\
             </head>\
               <body>\
                 <h1>LandXcape</h1>\
@@ -331,7 +334,8 @@ static void handleSwitchOnOff(void){
    digitalWrite(PWR,LOW);//Press Home Button 
    delay(PWRButtonPressTime);
    digitalWrite(PWR,HIGH);//Release Home Button 
-
+   delay(PWRButtonPressTime);
+   
   char temp[700];
   snprintf(temp, 700,
            "<html>\
@@ -351,6 +355,86 @@ static void handleSwitchOnOff(void){
             hour(),minute(),second()
             );
   wwwserver.send(200, "text/html", temp);
+
+  enterPinCode();
+}
+/**
+ * enterPinCode enters automatically the correct pin as statically given
+ */
+static void enterPinCode(void){
+  if (debugMode){
+    Serial.println((String)"enterPinCode triggered at UTC Time:"+hour()+":"+minute()+":"+second()+" " + year());
+  }
+
+  //start with a delay before entering the pin code
+  delay(3000);
+
+  int fstNumber = robiPinCode / 1000;
+  int sndNumber = (robiPinCode - fstNumber*1000) / 100;
+  int trdNumber = (robiPinCode - (fstNumber*1000 + sndNumber*100)) / 10;
+  int lstNumber = (robiPinCode - (fstNumber*1000 + sndNumber*100 + trdNumber*10)); 
+ 
+
+  //set the PinCode first row
+  for (int i=0; i!=fstNumber; i++){
+   digitalWrite(START,LOW);//Press Start Button 
+   delay(buttonPressTime);
+   digitalWrite(START,HIGH);//Release Start Button 
+   delay(buttonPressTime);
+  }
+
+  //Switch to next pin
+   digitalWrite(OKAY,LOW);//Press OK Button 
+   delay(buttonPressTime);
+   digitalWrite(OKAY,HIGH);//Release OK Button 
+   delay(buttonPressTime);
+
+  //set the PinCode second row
+  for (int i=fstNumber;  i!=sndNumber; i=(i+1)%10){
+   digitalWrite(START,LOW);//Press Start Button 
+   delay(buttonPressTime);
+   digitalWrite(START,HIGH);//Release Start Button 
+   delay(buttonPressTime);
+  }
+
+
+   //Switch to next pin
+   digitalWrite(OKAY,LOW);//Press OK Button 
+   delay(buttonPressTime);
+   digitalWrite(OKAY,HIGH);//Release OK Button 
+   delay(buttonPressTime);
+
+  //set the PinCode third row
+  for (int i=sndNumber; i!=trdNumber; i=(i+1)%10){
+   digitalWrite(START,LOW);//Press Start Button 
+   delay(buttonPressTime);
+   digitalWrite(START,HIGH);//Release Start Button 
+   delay(buttonPressTime);
+  }
+
+   //Switch to last pin
+   digitalWrite(OKAY,LOW);//Press OK Button 
+   delay(buttonPressTime);
+   digitalWrite(OKAY,HIGH);//Release OK Button 
+   delay(buttonPressTime);;
+
+  //set the PinCode last row
+  for (int i=trdNumber;  i!=lstNumber ; i=(i+1)%10){
+   digitalWrite(START,LOW);//Press Start Button 
+   delay(buttonPressTime);
+   digitalWrite(START,HIGH);//Release Start Button 
+   delay(buttonPressTime);
+  }
+
+   //Confirm Pin Code
+   digitalWrite(OKAY,LOW);//Press OK Button 
+   delay(buttonPressTime);
+   digitalWrite(OKAY,HIGH);//Release OK Button 
+   delay(buttonPressTime);
+
+  if (debugMode){
+    Serial.println((String)"enterPinCode finisched at UTC Time:"+hour()+":"+minute()+":"+second()+" " + year());
+  }
 }
 
 //Get the current time via NTP over the Internet
