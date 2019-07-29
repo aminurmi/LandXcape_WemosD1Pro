@@ -22,15 +22,22 @@ int baudrate = 115200;
 int delayToReconnectTry = 15000;
 boolean debugMode = false; //only useful as long as the WEMOS is connected to the PC ;)
 boolean NTPUpdateSuccessful = false;
-double version = 0.53;
+double version = 0.55;
+int lastReading=0;
 
 int buttonPressTime = 800; //in ms
 int PWRButtonPressTime = 2000; // in ms
 int switchBetweenPinsDelay = 3000; // in ms
 
+double A0reading = 0;
 double batteryVoltage = 0;
 double baseFor1V = 329.9479166;
 double faktorBat = 9.322916;
+
+double lowestBatVoltage = 0;
+double highestBatVoltage = 0;
+double lowestCellVoltage = 0;
+double highestCellVoltage = 0;
 
 int STOP = D1;
 int START = D3;
@@ -85,6 +92,7 @@ void setup() {
   wwwserver.on("/start", handleStartMowing);
   wwwserver.on("/stop", handleStopMowing);
   wwwserver.on("/goHome", handleGoHome);
+  wwwserver.on("/stats",showStatistics);
   wwwserver.on("/configure", handleAdministration);
   wwwserver.on("/PWRButton", handleSwitchOnOff);
   
@@ -106,6 +114,16 @@ void setup() {
   digitalWrite(HOME,HIGH);
   digitalWrite(OKAY,HIGH);
   digitalWrite(PWR,HIGH);
+
+  //prepare / init statistics
+  A0reading = analogRead(BATVOLT);
+  A0reading = A0reading / baseFor1V;
+  batteryVoltage = A0reading * faktorBat;
+
+  lowestBatVoltage = batteryVoltage;
+  highestBatVoltage = batteryVoltage;
+  lowestCellVoltage = batteryVoltage/5;
+  highestCellVoltage = batteryVoltage/5;
 }
 
 void loop() {
@@ -115,6 +133,31 @@ void loop() {
 
   if (NTPUpdateSuccessful==false){
     NTPUpdateSuccessful = syncTimeViaNTP();
+  }
+
+  //update statistics every second
+  if (lastReading!=second()){
+
+    double oldBatValue = batteryVoltage; //old value saved
+    //new value read in
+    A0reading = analogRead(BATVOLT); 
+    A0reading = A0reading / baseFor1V;
+    batteryVoltage = A0reading * faktorBat;
+    
+      if (oldBatValue != batteryVoltage) { //compute only if the reading has changed
+        if (batteryVoltage > highestBatVoltage){
+          highestBatVoltage = batteryVoltage;
+          highestCellVoltage = batteryVoltage/5;
+        }
+        if (batteryVoltage < lowestBatVoltage){
+          lowestBatVoltage = batteryVoltage;
+          lowestCellVoltage = batteryVoltage/5;
+        }
+      }
+      lastReading = second();
+   if (debugMode){
+      Serial.println((String)"Last Sensor Reading:"+hour()+":"+minute()+":"+second());
+   } 
   }
 }
 
@@ -126,17 +169,17 @@ static void handleRoot(void){
   digitalWrite(LED_BUILTIN, LOW); //show connection via LED  
 
   //preparation work
-  char temp[1200];
+  char temp[1500];
   int sec = millis() / 1000;
   int min = sec / 60;
   int hr = min / 60;
 
   //Battery Voltage computing
-  double reading = analogRead(BATVOLT);
-  reading = reading / baseFor1V;
-  batteryVoltage = reading * faktorBat;
+  A0reading = analogRead(BATVOLT);
+  A0reading = A0reading / baseFor1V;
+  batteryVoltage = A0reading * faktorBat;
   
-  snprintf(temp, 1200,
+  snprintf(temp, 1500,
 
            "<html>\
             <head>\
@@ -158,6 +201,8 @@ static void handleRoot(void){
                 <form method='POST' action='/stop'><button type='submit'>Stop</button></form>\
                 <br>\
                 <form method='POST' action='/goHome'><button type='submit'>go Home</button></form>\
+                <br>\
+                <form method='POST' action='/stats'><button type='submit'>Statistics</button></form>\ 
                 <br>\
                 <form method='POST' action='/configure'><button type='submit'>Administration</button></form>\ 
                 <br>\
@@ -293,6 +338,70 @@ static void handleGoHome(void){
   wwwserver.send(200, "text/html", temp);
 }
 
+
+/**
+ * showStatistics shows all kind of statistics for the nerdy user ;)
+ */
+
+static void showStatistics(void){
+ digitalWrite(LED_BUILTIN, LOW); //show connection via LED 
+ 
+    if (debugMode){
+      Serial.println((String)"showStatistics site requested at UTC Time:"+hour()+":"+minute()+":"+second()+" " + year());
+    }
+    
+    int sec = millis() / 1000;
+    int min = sec / 60;
+    int hr = min / 60;
+    double cellVoltage = batteryVoltage/5;
+    
+    char temp[1500];
+    snprintf(temp, 1500,
+             "<html>\
+              <head>\
+                <title>LandXcape Statistics</title>\
+                <style>\
+                  body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
+                </style>\
+                <meta http-equiv='Refresh' content='2; url=\\stats'>\
+              </head>\
+                <body>\
+                  <h1>LandXcape Statistics</h1>\
+                  <p></p>\
+                  <p>Uptime: %02d:%02d:%02d</p>\
+                  <p>UTC Time: %02d:%02d:%02d</p>\
+                  <p>Version: %02lf</p>\
+                  \
+                  <table style='width:90%'>\
+                    <tr>\
+                      <th><b>Battery:</b></th>\
+                    </tr>\
+                    <tr>\
+                      <th>Actual voltage: %02lf</th>\
+                      <th>Lowest voltage: %02lf</th>\
+                      <th>Highest voltage: %02lf</th>\
+                    </tr>\
+                    <tr>\
+                      <th><b>Cell:</b></th>\
+                      <th></th>\
+                      <th></th>\
+                    </tr>\
+                    <tr>\
+                      <th>Actual voltage: %02lf</th>\
+                      <th>Lowest voltage: %02lf</th>\
+                      <th>Highest voltage: %02lf</th>\
+                    </tr>\
+                  </table>\
+                  <form method='POST' action='/'><button type='submit'>Back to main menu</button></form>\
+                </body>\
+              </html>",
+              hr, min % 60, sec % 60,hour(),minute(),second(),version,batteryVoltage,lowestBatVoltage,highestBatVoltage,cellVoltage,lowestCellVoltage,highestCellVoltage
+              );
+    wwwserver.send(200, "text/html", temp);
+
+ digitalWrite(LED_BUILTIN, HIGH); //show connection via LED 
+}
+
 /*
  * handleAdministration allows to administrate your settings :)
  */
@@ -315,6 +424,8 @@ static void handleAdministration(void){
                 <body>\
                   <h1>LandXcape Administration Site</h1>\
                   <p><\p>\
+                  <br>\
+                  <form method='POST' action='/updateLandXcape'><button type='submit'>SW Update via WLAN</button></form>\
                 </body>\
               </html>"
               );
