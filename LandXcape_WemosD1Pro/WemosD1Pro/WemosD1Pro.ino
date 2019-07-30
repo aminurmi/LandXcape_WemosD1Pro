@@ -22,8 +22,10 @@ int baudrate = 115200;
 int delayToReconnectTry = 15000;
 boolean debugMode = false; //only useful as long as the WEMOS is connected to the PC ;)
 boolean NTPUpdateSuccessful = false;
-double version = 0.55;
-int lastReading=0;
+double version = 0.56;
+
+int lastReadingSec=0;
+int lastReadingMin=0;
 
 int buttonPressTime = 800; //in ms
 int PWRButtonPressTime = 2000; // in ms
@@ -38,6 +40,9 @@ double lowestBatVoltage = 0;
 double highestBatVoltage = 0;
 double lowestCellVoltage = 0;
 double highestCellVoltage = 0;
+
+double batterVoltageHistory [100];
+int batVoltHistCounter = 0;
 
 int STOP = D1;
 int START = D3;
@@ -95,6 +100,7 @@ void setup() {
   wwwserver.on("/stats",showStatistics);
   wwwserver.on("/configure", handleAdministration);
   wwwserver.on("/PWRButton", handleSwitchOnOff);
+  wwwserver.on("/BatGraph.svg",drawGraphBasedOnBatValues);
   
   wwwserver.begin();
   if (debugMode){
@@ -124,6 +130,11 @@ void setup() {
   highestBatVoltage = batteryVoltage;
   lowestCellVoltage = batteryVoltage/5;
   highestCellVoltage = batteryVoltage/5;
+
+  //initialize SVG Graphics array with just now values
+  for (int i=0;i<100;i++){
+    storeBatVoltHistory(batteryVoltage);
+  }
 }
 
 void loop() {
@@ -136,7 +147,7 @@ void loop() {
   }
 
   //update statistics every second
-  if (lastReading!=second()){
+  if (lastReadingSec!=second()){
 
     double oldBatValue = batteryVoltage; //old value saved
     //new value read in
@@ -154,7 +165,15 @@ void loop() {
           lowestCellVoltage = batteryVoltage/5;
         }
       }
-      lastReading = second();
+
+      //store battery values every minute
+      if (lastReadingMin!=minute()){
+
+        storeBatVoltHistory(batteryVoltage);
+        lastReadingMin = minute();
+      }
+      
+      lastReadingSec = second();
    if (debugMode){
       Serial.println((String)"Last Sensor Reading:"+hour()+":"+minute()+":"+second());
    } 
@@ -218,6 +237,7 @@ static void handleRoot(void){
 
   digitalWrite(LED_BUILTIN, HIGH); //show successful answer to request  
 }
+
 /*
  * handleStartMowing triggers the Robi to start with his job :)
  */
@@ -355,8 +375,8 @@ static void showStatistics(void){
     int hr = min / 60;
     double cellVoltage = batteryVoltage/5;
     
-    char temp[1500];
-    snprintf(temp, 1500,
+    char temp[2000];
+    snprintf(temp, 2000,
              "<html>\
               <head>\
                 <title>LandXcape Statistics</title>\
@@ -392,6 +412,10 @@ static void showStatistics(void){
                       <th>Highest voltage: %02lf</th>\
                     </tr>\
                   </table>\
+                  <p></p>\
+                  <p><b>Battery history of the last 100min</b></p>\
+                  <img src=\"/BatGraph.svg\" />\
+                  <p></p>\
                   <form method='POST' action='/'><button type='submit'>Back to main menu</button></form>\
                 </body>\
               </html>",
@@ -746,3 +770,48 @@ static void handleWebUpdateHelperFunction (void){
 
   digitalWrite(LED_BUILTIN, HIGH); //show working process via LED 
 }
+
+/**
+ * batterVoltageHistory helper function to store battery values 
+ */
+
+static void storeBatVoltHistory (double actualBatVolt){
+
+  if (batVoltHistCounter<100){
+    batterVoltageHistory[batVoltHistCounter] = actualBatVolt;
+  }else{
+    batVoltHistCounter=0; //loopstorage / ringbuffer
+    batterVoltageHistory[batVoltHistCounter] = actualBatVolt;
+  }
+  
+  batVoltHistCounter++;
+}
+
+/**
+ * drawGraphBasedOnBatValues as a SVG Graphics
+ */
+void drawGraphBasedOnBatValues() {
+  String svgGraphics = "";
+  char temp[100];
+  
+  svgGraphics += "<svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.1\" width=\"400\" height=\"150\">\n";
+  svgGraphics += "<rect width=\"400\" height=\"150\" fill=\"rgb(250, 230, 210)\" stroke-width=\"1\" stroke=\"rgb(0, 0, 0)\" />\n";
+  svgGraphics += "<g stroke=\"black\">\n";
+
+  int counter = (batVoltHistCounter+1)%100;
+  int y = (batterVoltageHistory[counter]-lowestBatVoltage)*33;
+ 
+  for (int x = 1; x < 400; x=x+4) { 
+
+    int y2 = (batterVoltageHistory[counter%100]-lowestBatVoltage)*33;
+    
+    sprintf(temp, "<line x1=\"%d\" y1=\"%d\" x2=\"%d\" y2=\"%d\" stroke-width=\"1\" />\n", x,150-y, x + 4,150-y2);
+    svgGraphics += temp;
+    y = y2;
+    counter++;
+  }
+  svgGraphics += "</g>\n</svg>\n";
+
+  wwwserver.send(200, "image/svg+xml", svgGraphics);
+}
+ 
