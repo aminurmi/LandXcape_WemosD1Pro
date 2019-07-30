@@ -22,7 +22,7 @@ int baudrate = 115200;
 int delayToReconnectTry = 15000;
 boolean debugMode = false; //only useful as long as the WEMOS is connected to the PC ;)
 boolean NTPUpdateSuccessful = false;
-double version = 0.58;
+double version = 0.601;
 
 int lastReadingSec=0;
 int lastReadingMin=0;
@@ -41,8 +41,13 @@ double highestBatVoltage = 0;
 double lowestCellVoltage = 0;
 double highestCellVoltage = 0;
 
-double batterVoltageHistory [100];
+double batterVoltageHistory [400];
 int batVoltHistCounter = 0;
+
+//admin variables
+int lastXXminBatHist = 100;
+const int maxBatHistValues = 400; // represents the max width of the statistic svg's
+String svgBatHistGraph = "";
 
 int STOP = D1;
 int START = D3;
@@ -50,7 +55,6 @@ int HOME = D5;
 int OKAY = D7;
 int BATVOLT = A0;
 int PWR = D6;
-
 
 ESP8266WebServer wwwserver(80);
 String content = "";
@@ -101,7 +105,8 @@ void setup() {
   wwwserver.on("/configure", handleAdministration);
   wwwserver.on("/PWRButton", handleSwitchOnOff);
   wwwserver.on("/BatGraph.svg",drawGraphBasedOnBatValues);
-  
+  wwwserver.on("/newAdminConfiguration", HTTP_POST, computeNewAdminConfig);
+
   wwwserver.begin();
   if (debugMode){
     Serial.println("HTTP server started");
@@ -132,9 +137,10 @@ void setup() {
   highestCellVoltage = batteryVoltage/5;
 
   //initialize SVG Graphics array with just now values
-  for (int i=0;i<100;i++){
+  for (int i=0;i<maxBatHistValues;i++){
     storeBatVoltHistory(batteryVoltage);
   }
+  computeGraphBasedOnBatValues();
 }
 
 void loop() {
@@ -170,6 +176,7 @@ void loop() {
       if (lastReadingMin!=minute()){
 
         storeBatVoltHistory(batteryVoltage);
+        computeGraphBasedOnBatValues();
         lastReadingMin = minute();
       }
       
@@ -266,7 +273,7 @@ static void handleStartMowing(void){
               <style>\
                 body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
               </style>\
-              <meta http-equiv='Refresh' content='4; url=\\'>\
+              <meta http-equiv='Refresh' content='2; url=\\'>\
             </head>\
               <body>\
                 <h1>LandXcape</h1>\
@@ -304,7 +311,7 @@ static void handleStopMowing(void){
               <style>\
                 body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
               </style>\
-              <meta http-equiv='Refresh' content='4; url=\\'>\
+              <meta http-equiv='Refresh' content='2; url=\\'>\
             </head>\
               <body>\
                 <h1>LandXcape</h1>\
@@ -345,7 +352,7 @@ static void handleGoHome(void){
               <style>\
                 body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
               </style>\
-              <meta http-equiv='Refresh' content='4; url=\\'>\
+              <meta http-equiv='Refresh' content='2; url=\\'>\
             </head>\
               <body>\
                 <h1>LandXcape</h1>\
@@ -413,13 +420,13 @@ static void showStatistics(void){
                     </tr>\
                   </table>\
                   <p></p>\
-                  <p><b>Battery history of the last 100min</b></p>\
+                  <p><b>Battery history of the last %02dmin</b></p>\
                   <img src=\"/BatGraph.svg\" />\
                   <p></p>\
                   <form method='POST' action='/'><button type='submit'>Back to main menu</button></form>\
                 </body>\
               </html>",
-              hr, min % 60, sec % 60,hour(),minute(),second(),version,batteryVoltage,lowestBatVoltage,highestBatVoltage,cellVoltage,lowestCellVoltage,highestCellVoltage
+              hr, min % 60, sec % 60,hour(),minute(),second(),version,batteryVoltage,lowestBatVoltage,highestBatVoltage,cellVoltage,lowestCellVoltage,highestCellVoltage,lastXXminBatHist
               );
     wwwserver.send(200, "text/html", temp);
 
@@ -432,12 +439,13 @@ static void showStatistics(void){
 static void handleAdministration(void){
 
   digitalWrite(LED_BUILTIN, LOW); //show connection via LED 
-  //currently dummy function
+
     if (debugMode){
       Serial.println((String)"Administration site requested at UTC Time:"+hour()+":"+minute()+":"+second()+" " + year());
     }
-    char temp[700];
-    snprintf(temp, 700,
+    char temp[1200];
+    
+    snprintf(temp, 1200,
              "<html>\
               <head>\
                 <title>LandXcape</title>\
@@ -448,12 +456,59 @@ static void handleAdministration(void){
                 <body>\
                   <h1>LandXcape Administration Site</h1>\
                   <p><\p>\
+                  <form method='POST' action='/newAdminConfiguration'>\
+                  Battery history: Show <input type='number' name='batHistMinShown' value='%02d' min=60 max=400> minutes<br>\                  
+                  <input type='submit' value='Submit'></form>\
+                  <form method='POST' action='/'><button type='submit'>Cancel</button></form>\
+                  <p><\p>\
                   <br>\
                   <form method='POST' action='/updateLandXcape'><button type='submit'>SW Update via WLAN</button></form>\
                 </body>\
-              </html>"
+              </html>",lastXXminBatHist
               );
     wwwserver.send(200, "text/html", temp);
+    digitalWrite(LED_BUILTIN, HIGH); //show connection via LED 
+}
+
+/**
+ * computeNewAdminConfig overwrites the present values by the given values from the user
+ */
+static void computeNewAdminConfig(void){
+  digitalWrite(LED_BUILTIN, LOW); //show connection via LED 
+
+    if(! wwwserver.hasArg("batHistMinShown") || wwwserver.arg("batHistMinShown") == NULL){ // Check if the POST request has crendentials and if they are correct
+      wwwserver.send(400, "text/plain","400: Invalid Request"); // The request is invalid, so send HTTP status 400
+      return;
+    }
+
+    //compute given values
+    int batHistMinShown_ = wwwserver.arg("batHistMinShown").toInt();
+    if (batHistMinShown_ >= 60 && batHistMinShown_ <=400){ //set it only if its valid
+       lastXXminBatHist = batHistMinShown_;     
+    }
+
+    if (debugMode){
+      Serial.println((String)"New Admin config transmitted at UTC Time:"+hour()+":"+minute()+":"+second()+" " + year());
+    }
+    char temp[1200];
+    snprintf(temp, 1200,
+             "<html>\
+              <head>\
+                <title>LandXcape</title>\
+                <style>\
+                  body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
+                </style>\
+                <meta http-equiv='Refresh' content='2; url=\\'>\
+              </head>\
+                <body>\
+                  <h1>LandXcape - administration changes submited at UTC Time: %02d:%02d:%02d</h1>\
+                  <p><\p>\
+                  <p>LastXXminBatHist Variable changed to: %02d</p>\
+              </body>\
+            </html>",
+            hour(),minute(),second(),lastXXminBatHist
+            );
+  wwwserver.send(200, "text/html", temp);
     digitalWrite(LED_BUILTIN, HIGH); //show connection via LED 
 }
 
@@ -509,7 +564,6 @@ static void enterPinCode(void){
   int trdNumber = (robiPinCode - (fstNumber*1000 + sndNumber*100)) / 10;
   int lstNumber = (robiPinCode - (fstNumber*1000 + sndNumber*100 + trdNumber*10)); 
  
-
   //set the PinCode first row
   for (int i=0; i!=fstNumber; i++){
    digitalWrite(START,LOW);//Press Start Button 
@@ -531,7 +585,6 @@ static void enterPinCode(void){
    digitalWrite(START,HIGH);//Release Start Button 
    delay(buttonPressTime);
   }
-
 
    //Switch to next pin
    digitalWrite(OKAY,LOW);//Press OK Button 
@@ -772,12 +825,12 @@ static void handleWebUpdateHelperFunction (void){
 }
 
 /**
- * batterVoltageHistory helper function to store battery values 
+ * batterVoltageHistory helper function to store battery values (max 400 entries <->maxBatHistValues)
  */
 
 static void storeBatVoltHistory (double actualBatVolt){
 
-  if (batVoltHistCounter<100){
+  if (batVoltHistCounter<maxBatHistValues){
     batterVoltageHistory[batVoltHistCounter] = actualBatVolt;
   }else{
     batVoltHistCounter=0; //loopstorage / ringbuffer
@@ -788,37 +841,55 @@ static void storeBatVoltHistory (double actualBatVolt){
 }
 
 /**
- * drawGraphBasedOnBatValues as a SVG Graphics
+ * drawGraphBasedOnBatValues as a SVG Graphics 
+ * SVG is computed only once every minute and stored as a String for presentation
  */
-void drawGraphBasedOnBatValues() {
-  String svgGraphics = "";
+void drawGraphBasedOnBatValues(void) {
+  wwwserver.send(200, "image/svg+xml", svgBatHistGraph);
+}
+
+/**
+ * computeGraphBasedOnBatValues as a SVG Graphics
+ */
+void computeGraphBasedOnBatValues(void) {
+
+  svgBatHistGraph = ""; //delete old SVG Graphics
   char temp[100];
   
-  svgGraphics += "<svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.1\" width=\"400\" height=\"150\">\n";
-  svgGraphics += "<rect width=\"400\" height=\"155\" fill=\"rgb(250, 230, 210)\" stroke-width=\"1\" stroke=\"rgb(0, 0, 0)\" />\n";
-  svgGraphics += "<g stroke=\"black\">\n";
+  svgBatHistGraph += "<svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.1\" width=\"400\" height=\"150\">\n";
+  svgBatHistGraph += "<rect width=\"400\" height=\"155\" fill=\"rgb(250, 230, 210)\" stroke-width=\"1\" stroke=\"rgb(0, 0, 0)\" />\n";
+  svgBatHistGraph += "<g stroke=\"black\">\n";
 
-  int counter = (batVoltHistCounter+1)%100;
-  int y = (batterVoltageHistory[counter]-lowestBatVoltage)*33;
+  int counter = (batVoltHistCounter+1)%maxBatHistValues;
+  
+  //compute amplifier
   //highestBatVoltage - lowestBatVoltage = z -> modifcation number for the amplifier
   double z=highestBatVoltage-lowestBatVoltage;
   
   if (z<=0.01){ //to prevent a division by zero after powering up with no changes to the battery
-    z=5;  
+    z=5;  //lowest Bat value ~ 16V max 21V -> 5V span between max and min bat voltage
   }
   double amplifier = 150/z;
- 
-  for (int x = 0; x < 400; x=x+4) { 
 
-    int y2 = (batterVoltageHistory[counter%100]-lowestBatVoltage)*amplifier;
+  int y = (batterVoltageHistory[counter]-lowestBatVoltage)*amplifier;
+
+  //compute dot width based on configured lastXXminBatHist (initial 100min)
+  int dotWidth = maxBatHistValues/lastXXminBatHist;
+  //and adapt counter to show only the selected amount of values
+  if (lastXXminBatHist!=maxBatHistValues) { // if max size (400pix) != gewählte minuten Anzahl
+    counter = (counter+(maxBatHistValues-lastXXminBatHist))%maxBatHistValues;
+  }
+ 
+  for (int x = 0; x < maxBatHistValues; x=x+dotWidth) { 
+
+    int y2 = (batterVoltageHistory[counter%maxBatHistValues]-lowestBatVoltage)*amplifier;
     
-    sprintf(temp, "<line x1=\"%d\" y1=\"%d\" x2=\"%d\" y2=\"%d\" stroke-width=\"1\" />\n", x,150-y, x + 4,150-y2);
-    svgGraphics += temp;
+    sprintf(temp, "<line x1=\"%d\" y1=\"%d\" x2=\"%d\" y2=\"%d\" stroke-width=\"1\" />\n", x,150-y, x + dotWidth,150-y2);
+    svgBatHistGraph += temp;
     y = y2;
     counter++;
   }
-  svgGraphics += "</g>\n</svg>\n";
+  svgBatHistGraph += "</g>\n</svg>\n";
 
-  wwwserver.send(200, "image/svg+xml", svgGraphics);
 }
  
