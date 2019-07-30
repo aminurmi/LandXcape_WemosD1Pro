@@ -22,7 +22,7 @@ int baudrate = 115200;
 int delayToReconnectTry = 15000;
 boolean debugMode = false; //only useful as long as the WEMOS is connected to the PC ;)
 boolean NTPUpdateSuccessful = false;
-double version = 0.56;
+double version = 0.58;
 
 int lastReadingSec=0;
 int lastReadingMin=0;
@@ -795,15 +795,22 @@ void drawGraphBasedOnBatValues() {
   char temp[100];
   
   svgGraphics += "<svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.1\" width=\"400\" height=\"150\">\n";
-  svgGraphics += "<rect width=\"400\" height=\"150\" fill=\"rgb(250, 230, 210)\" stroke-width=\"1\" stroke=\"rgb(0, 0, 0)\" />\n";
+  svgGraphics += "<rect width=\"400\" height=\"155\" fill=\"rgb(250, 230, 210)\" stroke-width=\"1\" stroke=\"rgb(0, 0, 0)\" />\n";
   svgGraphics += "<g stroke=\"black\">\n";
 
   int counter = (batVoltHistCounter+1)%100;
   int y = (batterVoltageHistory[counter]-lowestBatVoltage)*33;
+  //highestBatVoltage - lowestBatVoltage = z -> modifcation number for the amplifier
+  double z=highestBatVoltage-lowestBatVoltage;
+  
+  if (z<=0.01){ //to prevent a division by zero after powering up with no changes to the battery
+    z=5;  
+  }
+  double amplifier = 150/z;
  
-  for (int x = 1; x < 400; x=x+4) { 
+  for (int x = 0; x < 400; x=x+4) { 
 
-    int y2 = (batterVoltageHistory[counter%100]-lowestBatVoltage)*33;
+    int y2 = (batterVoltageHistory[counter%100]-lowestBatVoltage)*amplifier;
     
     sprintf(temp, "<line x1=\"%d\" y1=\"%d\" x2=\"%d\" y2=\"%d\" stroke-width=\"1\" />\n", x,150-y, x + 4,150-y2);
     svgGraphics += temp;
