@@ -22,12 +22,12 @@ int baudrate = 115200;
 int delayToReconnectTry = 15000;
 boolean debugMode = false; //only useful as long as the WEMOS is connected to the PC ;)
 boolean NTPUpdateSuccessful = false;
-double version = 0.601;
+double version = 0.614;
 
 int lastReadingSec=0;
 int lastReadingMin=0;
 
-int buttonPressTime = 800; //in ms
+int buttonPressTime = 700; //in ms
 int PWRButtonPressTime = 2000; // in ms
 int switchBetweenPinsDelay = 3000; // in ms
 
@@ -729,8 +729,8 @@ static void handleWebUpdate(void){
   digitalWrite(LED_BUILTIN, LOW); //show connection via LED 
 
   //preparation work
-  char temp[500];
-  snprintf(temp, 500,
+  char temp[700];
+  snprintf(temp, 700,
            "<html>\
   <head>\
     <title>LandXcape WebUpdate Site</title>\
@@ -743,6 +743,7 @@ static void handleWebUpdate(void){
       <p>UTC Time: %02d:%02d:%02d</p>\
       <p>Version: %02lf</p>\
            <form method='POST' action='/updateBin' enctype='multipart/form-data'><input type='file' name='update'><input type='submit' value='Update'></form>\
+           <form method='POST' action='/'><button type='submit'>Cancel</button></form>\
            </body> </html>",
            hour(),minute(),second(),version
           );
@@ -856,11 +857,11 @@ void computeGraphBasedOnBatValues(void) {
   svgBatHistGraph = ""; //delete old SVG Graphics
   char temp[100];
   
-  svgBatHistGraph += "<svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.1\" width=\"400\" height=\"150\">\n";
+  svgBatHistGraph += "<svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.1\" width=\"400\" height=\"155\">\n";
   svgBatHistGraph += "<rect width=\"400\" height=\"155\" fill=\"rgb(250, 230, 210)\" stroke-width=\"1\" stroke=\"rgb(0, 0, 0)\" />\n";
   svgBatHistGraph += "<g stroke=\"black\">\n";
 
-  int counter = (batVoltHistCounter+1)%maxBatHistValues;
+  int counter = batVoltHistCounter%maxBatHistValues;
   
   //compute amplifier
   //highestBatVoltage - lowestBatVoltage = z -> modifcation number for the amplifier
@@ -874,17 +875,18 @@ void computeGraphBasedOnBatValues(void) {
   int y = (batterVoltageHistory[counter]-lowestBatVoltage)*amplifier;
 
   //compute dot width based on configured lastXXminBatHist (initial 100min)
-  int dotWidth = maxBatHistValues/lastXXminBatHist;
+  double dotWidth = (double)maxBatHistValues/(double)lastXXminBatHist; //take care of the .xx part after the casting
+
   //and adapt counter to show only the selected amount of values
   if (lastXXminBatHist!=maxBatHistValues) { // if max size (400pix) != gewählte minuten Anzahl
     counter = (counter+(maxBatHistValues-lastXXminBatHist))%maxBatHistValues;
   }
- 
-  for (int x = 0; x < maxBatHistValues; x=x+dotWidth) { 
 
+  for (double x = 0; x < (double)maxBatHistValues; x=x+dotWidth) { 
+  
     int y2 = (batterVoltageHistory[counter%maxBatHistValues]-lowestBatVoltage)*amplifier;
     
-    sprintf(temp, "<line x1=\"%d\" y1=\"%d\" x2=\"%d\" y2=\"%d\" stroke-width=\"1\" />\n", x,150-y, x + dotWidth,150-y2);
+    sprintf(temp, "<line x1=\"%d\" y1=\"%d\" x2=\"%d\" y2=\"%d\" stroke-width=\"1\" />\n", (int)x, 150-y, (int)(x + dotWidth), 150-y2);
     svgBatHistGraph += temp;
     y = y2;
     counter++;
