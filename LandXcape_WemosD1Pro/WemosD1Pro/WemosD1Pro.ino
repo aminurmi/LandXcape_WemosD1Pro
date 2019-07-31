@@ -20,9 +20,9 @@ const char* password = "linuxrulezz";
 const int robiPinCode = 1881;
 int baudrate = 115200;
 int delayToReconnectTry = 15000;
-boolean debugMode = false; //only useful as long as the WEMOS is connected to the PC ;)
+int debugMode = 1; //0 = off, 1 = moderate debug messages, 2 = all debug messages
 boolean NTPUpdateSuccessful = false;
-double version = 0.614;
+double version = 0.615;
 
 int lastReadingSec=0;
 int lastReadingMin=0;
@@ -44,10 +44,15 @@ double highestCellVoltage = 0;
 double batterVoltageHistory [400];
 int batVoltHistCounter = 0;
 
+boolean robiAtHomeOrOnTheWayHome = true;
+
 //admin variables
 int lastXXminBatHist = 100;
 const int maxBatHistValues = 400; // represents the max width of the statistic svg's
 String svgBatHistGraph = "";
+boolean earlyGoHome = false;
+double earlyGoHomeVolt = 17.5;
+
 
 int STOP = D1;
 int START = D3;
@@ -65,7 +70,7 @@ String connectionEstablished = "WiFi connected: ";
 String ipAddr = "IP Address: ";
 
 void setup() {
-  if (debugMode){
+  if (debugMode>=1){
     Serial.begin(baudrate);
     delay(10);   
   }
@@ -73,7 +78,7 @@ void setup() {
   digitalWrite(LED_BUILTIN, HIGH); //LED off for now
 
   //WiFi Connection
-  if (debugMode){
+  if (debugMode>=1){
     Serial.println();
     Serial.println(connectTo + ssid);
   }
@@ -83,7 +88,7 @@ void setup() {
 
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
-    if (debugMode){
+    if (debugMode>=1){
       Serial.print(WiFi.status());
     }
   }
@@ -108,7 +113,7 @@ void setup() {
   wwwserver.on("/newAdminConfiguration", HTTP_POST, computeNewAdminConfig);
 
   wwwserver.begin();
-  if (debugMode){
+  if (debugMode>=1){
     Serial.println("HTTP server started");
   }
   NTPUpdateSuccessful = syncTimeViaNTP();
@@ -181,15 +186,29 @@ void loop() {
       }
       
       lastReadingSec = second();
-   if (debugMode){
+   if (debugMode>=2){
       Serial.println((String)"Last Sensor Reading:"+hour()+":"+minute()+":"+second());
    } 
+
+   //check if Go Home Early is active
+   if (earlyGoHome==true && robiAtHomeOrOnTheWayHome==false){
+    //compare measured voltage against defined one
+    if (earlyGoHomeVolt>=batteryVoltage){
+         if (debugMode>=1){
+            Serial.println((String)"Early Go Home triggered at UTC Time:"+hour()+":"+minute()+":"+second());
+            Serial.println((String)"With sensored Battery Value:"+batteryVoltage+" and limit set:"+earlyGoHomeVolt);
+         } 
+         handleStopMowing(); //stop mowing to allow to send robi home
+         handleGoHome(); //send Robi home
+    }
+   }
+   
   }
 }
 
 static void handleRoot(void){
 
-  if (debugMode){
+  if (debugMode>=2){
     Serial.println((String)"Connection from outside established at UTC Time:"+hour()+":"+minute()+":"+second()+" " + year());
   }
   digitalWrite(LED_BUILTIN, LOW); //show connection via LED  
@@ -250,8 +269,8 @@ static void handleRoot(void){
  */
 static void handleStartMowing(void){
 
-   if (debugMode){
-    Serial.println((String)"Start with the Start relay for " + buttonPressTime + "followed with the OK button for the same time");
+   if (debugMode>=1){
+    Serial.println((String)"Start with the Start relay for " + buttonPressTime + "followed with the OK button");
   }
    
    digitalWrite(START,LOW);//Press Start Button 
@@ -262,7 +281,7 @@ static void handleStartMowing(void){
    delay(buttonPressTime);
    digitalWrite(OKAY,HIGH);//Release Okay Button
 
-  if (debugMode){
+  if (debugMode>=1){
     Serial.println((String)"Mowing started at UTC Time:"+hour()+":"+minute()+":"+second()+" " + year());
   }
   char temp[700];
@@ -284,6 +303,8 @@ static void handleStartMowing(void){
             hour(),minute(),second()
             );
   wwwserver.send(200, "text/html", temp);
+
+  robiAtHomeOrOnTheWayHome = false; //Robi has just started so it can not be at home or on the way too ;)
 }
 
 /*
@@ -291,7 +312,7 @@ static void handleStartMowing(void){
  */
 static void handleStopMowing(void){
   
-   if (debugMode){
+   if (debugMode>=1){
     Serial.println((String)"Start with the Stop relay for " + buttonPressTime + " before releasing it again");
   }
    
@@ -300,7 +321,7 @@ static void handleStopMowing(void){
    digitalWrite(STOP,HIGH);//Release Stop Button 
 
    
-  if (debugMode){
+  if (debugMode>=1){
     Serial.println((String)"Mowing stoped at UTC Time:"+hour()+":"+minute()+":"+second()+" " + year());
   }
   char temp[700];
@@ -329,7 +350,7 @@ static void handleStopMowing(void){
  */
 static void handleGoHome(void){
   
-  if (debugMode){
+  if (debugMode>=1){
     Serial.println((String)"Start with the Home relay for " + buttonPressTime + "followed with the OK button for the same time");
   }
    
@@ -341,7 +362,7 @@ static void handleGoHome(void){
    delay(buttonPressTime);
    digitalWrite(OKAY,HIGH);//Release Okay Button
    
-  if (debugMode){
+  if (debugMode>=1){
     Serial.println((String)"Robi sent home at UTC Time:"+hour()+":"+minute()+":"+second()+" " + year());
   }
   char temp[700];
@@ -363,6 +384,8 @@ static void handleGoHome(void){
             hour(),minute(),second()
             );
   wwwserver.send(200, "text/html", temp);
+
+  robiAtHomeOrOnTheWayHome=true; // since robi is on the way home
 }
 
 
@@ -373,7 +396,7 @@ static void handleGoHome(void){
 static void showStatistics(void){
  digitalWrite(LED_BUILTIN, LOW); //show connection via LED 
  
-    if (debugMode){
+    if (debugMode>=2){
       Serial.println((String)"showStatistics site requested at UTC Time:"+hour()+":"+minute()+":"+second()+" " + year());
     }
     
@@ -390,7 +413,7 @@ static void showStatistics(void){
                 <style>\
                   body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
                 </style>\
-                <meta http-equiv='Refresh' content='2; url=\\stats'>\
+                <meta http-equiv='Refresh' content='3; url=\\stats'>\
               </head>\
                 <body>\
                   <h1>LandXcape Statistics</h1>\
@@ -434,18 +457,26 @@ static void showStatistics(void){
 }
 
 /*
- * handleAdministration allows to administrate your settings :)
+ * handleAdministration allows to administrate your settings :) earlyGoHome
  */
 static void handleAdministration(void){
 
   digitalWrite(LED_BUILTIN, LOW); //show connection via LED 
 
-    if (debugMode){
+    if (debugMode>=1){
       Serial.println((String)"Administration site requested at UTC Time:"+hour()+":"+minute()+":"+second()+" " + year());
     }
-    char temp[1200];
-    
-    snprintf(temp, 1200,
+    //preparations
+    char temp[1500];
+    char* earlyGoHomeCheckBoxValue = "unchecked";
+    if (earlyGoHome==true){
+      earlyGoHomeCheckBoxValue = "checked";
+    }
+    int earlyGoHomeVolt_ = earlyGoHomeVolt;
+    int earlyGoHome_mVolt_ = (double(earlyGoHomeVolt-earlyGoHomeVolt_)*1000); // subtract the voltage and multiply by 1000 to get the milivolts
+
+    //create website
+    snprintf(temp, 1500,
              "<html>\
               <head>\
                 <title>LandXcape</title>\
@@ -457,14 +488,16 @@ static void handleAdministration(void){
                   <h1>LandXcape Administration Site</h1>\
                   <p><\p>\
                   <form method='POST' action='/newAdminConfiguration'>\
-                  Battery history: Show <input type='number' name='batHistMinShown' value='%02d' min=60 max=400> minutes<br>\                  
+                  Battery history: Show <input type='number' name='batHistMinShown' value='%02d' min=60 max=400> minutes<br>\     
+                  Activate function \"Go Home Early\" <input type='checkbox' name='goHomeEarly' %s><br>\
+                  If activated, send LandXcape home at: <input type='number' name='batVol' value='%02d' min=17 max=20> V <input type='number' name='batMiliVolt' value='%02d' min=000 max=999>mV<br>\        
                   <input type='submit' value='Submit'></form>\
                   <form method='POST' action='/'><button type='submit'>Cancel</button></form>\
                   <p><\p>\
                   <br>\
                   <form method='POST' action='/updateLandXcape'><button type='submit'>SW Update via WLAN</button></form>\
                 </body>\
-              </html>",lastXXminBatHist
+              </html>",lastXXminBatHist,earlyGoHomeCheckBoxValue,earlyGoHomeVolt_,earlyGoHome_mVolt_
               );
     wwwserver.send(200, "text/html", temp);
     digitalWrite(LED_BUILTIN, HIGH); //show connection via LED 
@@ -475,8 +508,10 @@ static void handleAdministration(void){
  */
 static void computeNewAdminConfig(void){
   digitalWrite(LED_BUILTIN, LOW); //show connection via LED 
-
-    if(! wwwserver.hasArg("batHistMinShown") || wwwserver.arg("batHistMinShown") == NULL){ // Check if the POST request has crendentials and if they are correct
+ 
+    // Check if the POST request has crendentials and if they are correct
+    if(! wwwserver.hasArg("batHistMinShown") || wwwserver.arg("batHistMinShown") == NULL ||
+       ! wwwserver.hasArg("batVol") || wwwserver.arg("batVol") == NULL || ! wwwserver.hasArg("batMiliVolt") || wwwserver.arg("batMiliVolt") == NULL ){ 
       wwwserver.send(400, "text/plain","400: Invalid Request"); // The request is invalid, so send HTTP status 400
       return;
     }
@@ -487,9 +522,11 @@ static void computeNewAdminConfig(void){
        lastXXminBatHist = batHistMinShown_;     
     }
 
-    if (debugMode){
-      Serial.println((String)"New Admin config transmitted at UTC Time:"+hour()+":"+minute()+":"+second()+" " + year());
-    }
+    earlyGoHome = (boolean)wwwserver.hasArg("goHomeEarly");
+    int batVolt = wwwserver.arg("batVol").toInt();
+    int batMiliVolt = wwwserver.arg("batMiliVolt").toInt();
+    earlyGoHomeVolt = (double)batVolt+(double) batMiliVolt/1000;
+
     char temp[1200];
     snprintf(temp, 1200,
              "<html>\
@@ -498,17 +535,29 @@ static void computeNewAdminConfig(void){
                 <style>\
                   body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
                 </style>\
-                <meta http-equiv='Refresh' content='2; url=\\'>\
+                <meta http-equiv='Refresh' content='3; url=\\'>\
               </head>\
                 <body>\
                   <h1>LandXcape - administration changes submited at UTC Time: %02d:%02d:%02d</h1>\
                   <p><\p>\
                   <p>LastXXminBatHist Variable changed to: %02d</p>\
+                  <p>GoHomeEarly Function: %d</p>\
+                  <p>GoHomeEarly Voltage:: %2.3f</p>\
               </body>\
             </html>",
-            hour(),minute(),second(),lastXXminBatHist
+            hour(),minute(),second(),lastXXminBatHist,earlyGoHome,earlyGoHomeVolt
             );
   wwwserver.send(200, "text/html", temp);
+
+    if (debugMode>=1){
+      Serial.println((String)"New Admin config transmitted at UTC Time:"+hour()+":"+minute()+":"+second()+" " + year());
+      Serial.println("With the following values:");
+      Serial.println("");
+      Serial.println((String)"Battery History Showtime"+lastXXminBatHist);
+      Serial.println((String)"GoHomeEarly Function:"+earlyGoHome);
+      Serial.println((String)"GoHomeEarly Voltage:"+earlyGoHomeVolt);
+    }
+  
     digitalWrite(LED_BUILTIN, HIGH); //show connection via LED 
 }
 
@@ -517,7 +566,7 @@ static void computeNewAdminConfig(void){
  */
 static void handleSwitchOnOff(void){
 
- if (debugMode){
+ if (debugMode>=1){
     Serial.println((String)"handleSwitchOnOff triggered at UTC Time:"+hour()+":"+minute()+":"+second()+" " + year());
   }
    
@@ -552,7 +601,7 @@ static void handleSwitchOnOff(void){
  * enterPinCode enters automatically the correct pin as statically given
  */
 static void enterPinCode(void){
-  if (debugMode){
+  if (debugMode>=1){
     Serial.println((String)"enterPinCode triggered at UTC Time:"+hour()+":"+minute()+":"+second()+" " + year());
   }
 
@@ -620,7 +669,7 @@ static void enterPinCode(void){
    digitalWrite(OKAY,HIGH);//Release OK Button 
    delay(buttonPressTime);
 
-  if (debugMode){
+  if (debugMode>=1){
     Serial.println((String)"enterPinCode finisched at UTC Time:"+hour()+":"+minute()+":"+second()+" " + year());
   }
 }
@@ -636,7 +685,7 @@ static boolean syncTimeViaNTP(void){
   int NTP_PACKET_SIZE = 48; // NTP time stamp is in the first 48 bytes of the message
   byte packetBuffer[ NTP_PACKET_SIZE]; //buffer to hold incoming and outgoing packets
 
-    if (debugMode){
+    if (debugMode>=1){
       Serial.println("Starting UDP");
     }
     udp.begin(localPort);
@@ -644,7 +693,7 @@ static boolean syncTimeViaNTP(void){
     //get a random server from the pool
     WiFi.hostByName(ntpServerName, timeServerIP);
 
-    if (debugMode){
+    if (debugMode>=1){
       Serial.println("sending NTP packet...");
     }
   
@@ -678,7 +727,7 @@ static boolean syncTimeViaNTP(void){
       return false;
     }
 
-    if (debugMode){
+    if (debugMode>=1){
       Serial.println((String)"packet received, length="+ cb);
     }
         
@@ -751,7 +800,7 @@ static void handleWebUpdate(void){
   //present website 
   wwwserver.send(200, "text/html", temp);
 
-    if (debugMode){
+    if (debugMode>=1){
           Serial.println("WebUpdate site requested...");
     }
 
@@ -760,14 +809,14 @@ static void handleWebUpdate(void){
 
 static void handleUpdateViaBinary(void){
   digitalWrite(LED_BUILTIN, LOW); //show working process via LED 
-  if (debugMode){
+  if (debugMode>=1){
           Serial.println("handleUpdateViaBinary function triggered...");
   }
 
   wwwserver.sendHeader("Connection", "close");
   wwwserver.send(200, "text/plain", (Update.hasError()) ? "FAIL" : "OK");
   ESP.restart();
-  if (debugMode){
+  if (debugMode>=1){
           Serial.println("handleUpdateViaBinary function finished...");
   }
   
