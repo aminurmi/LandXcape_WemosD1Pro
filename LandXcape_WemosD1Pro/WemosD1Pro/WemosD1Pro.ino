@@ -12,7 +12,7 @@
 #include <WiFiUdp.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
-#include <WiFiClient.h>
+
 
 //variables
 const char* ssid     = "Linux_2";
@@ -22,7 +22,7 @@ int baudrate = 115200;
 int delayToReconnectTry = 15000;
 int debugMode = 1; //0 = off, 1 = moderate debug messages, 2 = all debug messages
 boolean NTPUpdateSuccessful = false;
-double version = 0.615;
+double version = 0.6200;
 
 int lastReadingSec=0;
 int lastReadingMin=0;
@@ -52,7 +52,7 @@ const int maxBatHistValues = 400; // represents the max width of the statistic s
 String svgBatHistGraph = "";
 boolean earlyGoHome = false;
 double earlyGoHomeVolt = 17.5;
-
+int dailyTasks = -1;
 
 int STOP = D1;
 int START = D3;
@@ -68,6 +68,16 @@ String content = "";
 String connectTo = "Connection to ";
 String connectionEstablished = "WiFi connected: ";
 String ipAddr = "IP Address: ";
+
+//SunriseSunset variables -> https://www.zamg.ac.at/cms/de/klima/klimauebersichten/ephemeriden/graz/?jahr=2019
+//or have a look here for the algorithm -> https://www.instructables.com/id/Calculating-Sunset-and-Sunrise-for-a-Microcontroll/
+int earliest_sunrise = 303;//5:03am in minutes after midnight => 303min at Graz
+int latest_sunrise = 464;//7:44am
+int earliest_sunset = 969; // 16:09
+int latest_sunset = 1258; //20:58
+boolean SummerTimeActive = true;
+int sunrise = -1; //init value
+int sunset = -1; //init value
 
 void setup() {
   if (debugMode>=1){
@@ -111,6 +121,7 @@ void setup() {
   wwwserver.on("/PWRButton", handleSwitchOnOff);
   wwwserver.on("/BatGraph.svg",drawGraphBasedOnBatValues);
   wwwserver.on("/newAdminConfiguration", HTTP_POST, computeNewAdminConfig);
+  wwwserver.on("/resetWemos",resetWemosBoard);
 
   wwwserver.begin();
   if (debugMode>=1){
@@ -145,7 +156,10 @@ void setup() {
   for (int i=0;i<maxBatHistValues;i++){
     storeBatVoltHistory(batteryVoltage);
   }
+  
   computeGraphBasedOnBatValues();
+  dailyTasks = day(); //store the current day for the daily tasks
+  doItOnceADay();
 }
 
 void loop() {
@@ -202,7 +216,12 @@ void loop() {
          handleGoHome(); //send Robi home
     }
    }
-   
+  }
+
+  //check if a new day as started
+  if (dailyTasks!=day()){ //and if so then do the daily housework
+    doItOnceADay();
+    dailyTasks=day();//store today as new dailyTasks day
   }
 }
 
@@ -404,7 +423,14 @@ static void showStatistics(void){
     int min = sec / 60;
     int hr = min / 60;
     double cellVoltage = batteryVoltage/5;
-    
+
+    String sunrise_ = (String)""+sunrise/60+"h "+sunrise%60+"min";
+    char sunrise__[10];
+    sunrise_.toCharArray(sunrise__,10);
+    String sunset_ = (String)""+sunset/60+"h "+sunset%60+"min";
+    char sunset__[10];
+    sunset_.toCharArray(sunset__,10);
+        
     char temp[2000];
     snprintf(temp, 2000,
              "<html>\
@@ -420,9 +446,12 @@ static void showStatistics(void){
                   <p></p>\
                   <p>Uptime: %02d:%02d:%02d</p>\
                   <p>UTC Time: %02d:%02d:%02d</p>\
+                  <p>Date: %02d:%02d:%02d</p>\
+                  <p>Computed sunrise approx: %s</p>\
+                  <p>Computed sunset approx: %s</p>\
                   <p>Version: %02lf</p>\
                   \
-                  <table style='width:90%'>\
+                  <table style='width:400px'>\
                     <tr>\
                       <th><b>Battery:</b></th>\
                     </tr>\
@@ -449,8 +478,9 @@ static void showStatistics(void){
                   <form method='POST' action='/'><button type='submit'>Back to main menu</button></form>\
                 </body>\
               </html>",
-              hr, min % 60, sec % 60,hour(),minute(),second(),version,batteryVoltage,lowestBatVoltage,highestBatVoltage,cellVoltage,lowestCellVoltage,highestCellVoltage,lastXXminBatHist
+              hr, min % 60, sec % 60,hour(),minute(),second(),day(),month(),year(),sunrise__,sunset__,version,batteryVoltage,lowestBatVoltage,highestBatVoltage,cellVoltage,lowestCellVoltage,highestCellVoltage,lastXXminBatHist
               );
+
     wwwserver.send(200, "text/html", temp);
 
  digitalWrite(LED_BUILTIN, HIGH); //show connection via LED 
@@ -481,7 +511,7 @@ static void handleAdministration(void){
               <head>\
                 <title>LandXcape</title>\
                 <style>\
-                  body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
+                  body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088;}\
                 </style>\
               </head>\
                 <body>\
@@ -490,12 +520,18 @@ static void handleAdministration(void){
                   <form method='POST' action='/newAdminConfiguration'>\
                   Battery history: Show <input type='number' name='batHistMinShown' value='%02d' min=60 max=400> minutes<br>\     
                   Activate function \"Go Home Early\" <input type='checkbox' name='goHomeEarly' %s><br>\
-                  If activated, send LandXcape home at: <input type='number' name='batVol' value='%02d' min=17 max=20> V <input type='number' name='batMiliVolt' value='%02d' min=000 max=999>mV<br>\        
+                  If activated, send LandXcape home at: <input type='number' name='batVol' value='%02d' min=17 max=20> V <input type='number' name='batMiliVolt' value='%02d' min=000 max=999>mV<br>\ 
+                  <br>\
                   <input type='submit' value='Submit'></form>\
-                  <form method='POST' action='/'><button type='submit'>Cancel</button></form>\
+                  <form method='POST' action='/'><button type='submit'>Cancel</button></form>\                  
                   <p><\p>\
                   <br>\
-                  <form method='POST' action='/updateLandXcape'><button type='submit'>SW Update via WLAN</button></form>\
+                  <table style='width:90%'>\
+                    <tr>\
+                      <th><form method='POST' action='/updateLandXcape'><button type='submit'>SW Update via WLAN</button></form></th>\
+                      <th><form method='POST' action='/resetWemos'><button type='submit'>Reset WEMOS board</button></form>\ </th>\
+                    </tr>\       
+                  </table>\
                 </body>\
               </html>",lastXXminBatHist,earlyGoHomeCheckBoxValue,earlyGoHomeVolt_,earlyGoHome_mVolt_
               );
@@ -526,7 +562,7 @@ static void computeNewAdminConfig(void){
     int batVolt = wwwserver.arg("batVol").toInt();
     int batMiliVolt = wwwserver.arg("batMiliVolt").toInt();
     earlyGoHomeVolt = (double)batVolt+(double) batMiliVolt/1000;
-
+    
     char temp[1200];
     snprintf(temp, 1200,
              "<html>\
@@ -556,6 +592,12 @@ static void computeNewAdminConfig(void){
       Serial.println((String)"Battery History Showtime"+lastXXminBatHist);
       Serial.println((String)"GoHomeEarly Function:"+earlyGoHome);
       Serial.println((String)"GoHomeEarly Voltage:"+earlyGoHomeVolt);
+    }
+    
+    computeGraphBasedOnBatValues();
+    
+    if (debugMode>=1){
+      Serial.println("Update of the battery voltage picture realized.");
     }
   
     digitalWrite(LED_BUILTIN, HIGH); //show connection via LED 
@@ -815,12 +857,13 @@ static void handleUpdateViaBinary(void){
 
   wwwserver.sendHeader("Connection", "close");
   wwwserver.send(200, "text/plain", (Update.hasError()) ? "FAIL" : "OK");
-  ESP.restart();
+  
   if (debugMode>=1){
           Serial.println("handleUpdateViaBinary function finished...");
   }
   
   digitalWrite(LED_BUILTIN, HIGH); //show working process via LED 
+  ESP.restart();
 }
 
 static void handleWebUpdateHelperFunction (void){
@@ -869,7 +912,6 @@ static void handleWebUpdateHelperFunction (void){
         }
         Serial.setDebugOutput(false);
       }
-      yield();
 
   digitalWrite(LED_BUILTIN, HIGH); //show working process via LED 
 }
@@ -943,4 +985,77 @@ void computeGraphBasedOnBatValues(void) {
   svgBatHistGraph += "</g>\n</svg>\n";
 
 }
- 
+
+/**
+ * resetWemosBoard via SW reset
+ */
+
+void resetWemosBoard(void){
+  if (debugMode>=1){
+          Serial.println("Software reset triggered. Reseting...");
+  }
+  ESP.restart();
+}
+
+/**
+ * Approximate sunrise and sunset based on UTC +1h for MESZ and according if summer time (DST) is valid or not
+ */
+
+static void computeSunriseSunsetInformation(void){
+
+  if (debugMode>=1){
+    Serial.println("computeSunriseSunsetInformation function triggered...");
+  }
+
+  SummerTimeActive = summertime_EU(year(),month(),day(),hour(),1);
+
+  int day_ = (((month()-1)*30.5)+day());
+
+  int average_sunrise = (earliest_sunrise+latest_sunrise)/2;
+  int diff_sunrise = (latest_sunrise-earliest_sunrise);
+  int average_sunset = (earliest_sunset+latest_sunset)/2;
+  int diff_sunset = (latest_sunset-earliest_sunset);
+
+  sunrise = (average_sunrise+(diff_sunrise/2)*cos((day_+8)/58.09));
+  sunset = (average_sunset-(diff_sunset/2)*cos((day_+8)/58.09));
+
+  //Sumertime-correction if necessary
+  if(SummerTimeActive==false){
+    sunrise=sunrise-60;//reduce 60min 
+    sunrise=sunset-60;//reduce 60min 
+  }
+
+  if (debugMode>=1){
+    Serial.println(SummerTimeActive);
+    Serial.println((String)"Sunrise for today:"+sunrise/60+"h " + sunrise%60 + "min");
+    Serial.println((String)"Sunset for today:"+sunset/60+"h " + sunset%60 + "min");
+  }
+}
+
+/**
+ * Summertime algo from a colleague :) Thank you :)
+ * European Daylight Savings Time calculation by "jurs" for German Arduino Forum
+ * input parameters: "normal time" for year, month, day, hour and tzHours (0=UTC, 1=MEZ)
+ * return value: returns true during Daylight Saving Time, false otherwise
+ */
+boolean summertime_EU(int year, byte month, byte day, byte hour, byte tzHours)
+{
+ if (month<3 || month>10) return false; // keine Sommerzeit in Jan, Feb, Nov, Dez
+ if (month>3 && month<10) return true; // Sommerzeit in Apr, Mai, Jun, Jul, Aug, Sep
+ if (month==3 && (hour + 24 * day)>=(1 + tzHours + 24*(31 - (5 * year /4 + 4) % 7)) || month==10 && (hour + 24 * day)<(1 + tzHours + 24*(31 - (5 * year /4 + 1) % 7)))
+   return true;
+ else
+   return false;
+}
+
+/**
+ * doItOnceADay() - contains necesseray tasks to keep everything in sync
+ */
+ static void doItOnceADay(void){
+  if (debugMode>=1){
+    Serial.println((String)"Summertime:"+SummerTimeActive);
+    Serial.println("doItOnceADay has been triggered. Doing the daily work...");
+  }
+  NTPUpdateSuccessful = syncTimeViaNTP(); //resync time from the NTP just to ensure correctness
+  computeSunriseSunsetInformation(); //compute the new sunrise and sunset for today
+ }
