@@ -22,7 +22,7 @@ int baudrate = 115200;
 int delayToReconnectTry = 15000;
 int debugMode = 1; //0 = off, 1 = moderate debug messages, 2 = all debug messages
 boolean NTPUpdateSuccessful = false;
-double version = 0.6200;
+double version = 0.6203; //localtime inkl summertime
 
 int lastReadingSec=0;
 int lastReadingMin=0;
@@ -45,6 +45,8 @@ double batterVoltageHistory [400];
 int batVoltHistCounter = 0;
 
 boolean robiAtHomeOrOnTheWayHome = true;
+boolean isCharging = false;
+boolean hasCharged = false;
 
 //admin variables
 int lastXXminBatHist = 100;
@@ -53,6 +55,7 @@ String svgBatHistGraph = "";
 boolean earlyGoHome = false;
 double earlyGoHomeVolt = 17.5;
 int dailyTasks = -1;
+boolean allDayMowing = false; //lawn mowing from sunrise to sunset
 
 int STOP = D1;
 int START = D3;
@@ -63,6 +66,8 @@ int PWR = D6;
 
 ESP8266WebServer wwwserver(80);
 String content = "";
+char* true_ = "true";
+char* false_ = "false";
 
 //Debug messages
 String connectTo = "Connection to ";
@@ -78,6 +83,10 @@ int latest_sunset = 1258; //20:58
 boolean SummerTimeActive = true;
 int sunrise = -1; //init value
 int sunset = -1; //init value
+
+int UTCtimezone = 1;
+boolean timeAdjusted = false;;
+
 
 void setup() {
   if (debugMode>=1){
@@ -191,31 +200,58 @@ void loop() {
         }
       }
 
-      //store battery values every minute
+      //every minute jobs
       if (lastReadingMin!=minute()){
-
+        //store battery values every minute
         storeBatVoltHistory(batteryVoltage);
         computeGraphBasedOnBatValues();
+
+        //check if we are charging or if charging is needed
+        if(isCharging == false){
+          checkBatValues();
+        }
+
+        //check is "Mowing from Sunrise to Sunset is activated and if yes trigger mowing if we are not charging and we are at home
+        if(allDayMowing==true && robiAtHomeOrOnTheWayHome==true && hasCharged == true){
+
+          //check if the sun is up ;)
+          int currentTimeInMin = hour()*60+minute();
+
+          if(sunrise<=currentTimeInMin && sunset >=currentTimeInMin){ //activate function only while the sun is up and running ;)
+
+              if(robiAtHomeOrOnTheWayHome==true && isCharging==false && hasCharged == true){ //Charging finished, battery voltage drops again since no higher charging voltage is present
+                  if (debugMode>=1){
+                    Serial.println((String)"Mowing from Sunrise to Sunset - start next round at UTC Time:"+hour()+":"+minute()+":"+second());
+                  } 
+                  handleStartMowing(); //start mowing; boolean variables will be set within this function
+              }
+       
+          }else{
+            if (debugMode>=2){
+                    Serial.println((String)"Sunrise to Sunset mowing deactived because sunrise>=currentTimeInMin <=sunset"+sunrise+"<="+currentTimeInMin+"sunset>="+sunset);
+            }
+          }
+        }  
         lastReadingMin = minute();
       }
-      
-      lastReadingSec = second();
-   if (debugMode>=2){
-      Serial.println((String)"Last Sensor Reading:"+hour()+":"+minute()+":"+second());
-   } 
-
-   //check if Go Home Early is active
-   if (earlyGoHome==true && robiAtHomeOrOnTheWayHome==false){
-    //compare measured voltage against defined one
-    if (earlyGoHomeVolt>=batteryVoltage){
-         if (debugMode>=1){
-            Serial.println((String)"Early Go Home triggered at UTC Time:"+hour()+":"+minute()+":"+second());
-            Serial.println((String)"With sensored Battery Value:"+batteryVoltage+" and limit set:"+earlyGoHomeVolt);
-         } 
-         handleStopMowing(); //stop mowing to allow to send robi home
-         handleGoHome(); //send Robi home
-    }
-   }
+            
+       if (debugMode>=2){
+          Serial.println((String)"Last Sensor Reading:"+hour()+":"+minute()+":"+second());
+       } 
+    
+       //check if Go Home Early is active
+       if (earlyGoHome==true && robiAtHomeOrOnTheWayHome==false){
+        //compare measured voltage against defined one
+        if (earlyGoHomeVolt>=batteryVoltage){
+             if (debugMode>=1){
+                Serial.println((String)"Early Go Home triggered at UTC Time:"+hour()+":"+minute()+":"+second());
+                Serial.println((String)"With sensored Battery Value:"+batteryVoltage+" and limit set:"+earlyGoHomeVolt);
+             } 
+             handleStopMowing(); //stop mowing to allow to send robi home
+             handleGoHome(); //send Robi home
+        }
+       }
+     lastReadingSec = second();
   }
 
   //check if a new day as started
@@ -324,6 +360,8 @@ static void handleStartMowing(void){
   wwwserver.send(200, "text/html", temp);
 
   robiAtHomeOrOnTheWayHome = false; //Robi has just started so it can not be at home or on the way too ;)
+  isCharging = false; //see above ;)
+  hasCharged = false;
 }
 
 /*
@@ -430,6 +468,28 @@ static void showStatistics(void){
     String sunset_ = (String)""+sunset/60+"h "+sunset%60+"min";
     char sunset__[10];
     sunset_.toCharArray(sunset__,10);
+
+    char* isChargingValue;
+    char* robiAtHomeOrOnTheWayHomeValue;  
+    char* hasChargedValue;
+
+    if (isCharging){
+      isChargingValue = true_;
+    }else{
+      isChargingValue = false_;
+    }
+
+    if (hasCharged){
+      hasChargedValue = true_;
+    }else{
+      hasChargedValue = false_;
+    }
+
+    if (robiAtHomeOrOnTheWayHome){
+      robiAtHomeOrOnTheWayHomeValue = true_;
+    }else{
+      robiAtHomeOrOnTheWayHomeValue = false_;
+    }
         
     char temp[2000];
     snprintf(temp, 2000,
@@ -445,10 +505,11 @@ static void showStatistics(void){
                   <h1>LandXcape Statistics</h1>\
                   <p></p>\
                   <p>Uptime: %02d:%02d:%02d</p>\
-                  <p>UTC Time: %02d:%02d:%02d</p>\
+                  <p>Time: %02d:%02d:%02d</p>\
                   <p>Date: %02d:%02d:%02d</p>\
                   <p>Computed sunrise approx: %s</p>\
                   <p>Computed sunset approx: %s</p>\
+                  <p>HasCharged/isCharging: %s/%s   (OnTheWay)Home: %s</p>\
                   <p>Version: %02lf</p>\
                   \
                   <table style='width:400px'>\
@@ -478,7 +539,8 @@ static void showStatistics(void){
                   <form method='POST' action='/'><button type='submit'>Back to main menu</button></form>\
                 </body>\
               </html>",
-              hr, min % 60, sec % 60,hour(),minute(),second(),day(),month(),year(),sunrise__,sunset__,version,batteryVoltage,lowestBatVoltage,highestBatVoltage,cellVoltage,lowestCellVoltage,highestCellVoltage,lastXXminBatHist
+              hr, min % 60, sec % 60,hour(),minute(),second(),day(),month(),year(),sunrise__,sunset__,hasChargedValue,isChargingValue,robiAtHomeOrOnTheWayHomeValue,
+              version,batteryVoltage,lowestBatVoltage,highestBatVoltage,cellVoltage,lowestCellVoltage,highestCellVoltage,lastXXminBatHist
               );
 
     wwwserver.send(200, "text/html", temp);
@@ -497,7 +559,7 @@ static void handleAdministration(void){
       Serial.println((String)"Administration site requested at UTC Time:"+hour()+":"+minute()+":"+second()+" " + year());
     }
     //preparations
-    char temp[1500];
+    char temp[2000];
     char* earlyGoHomeCheckBoxValue = "unchecked";
     if (earlyGoHome==true){
       earlyGoHomeCheckBoxValue = "checked";
@@ -505,8 +567,13 @@ static void handleAdministration(void){
     int earlyGoHomeVolt_ = earlyGoHomeVolt;
     int earlyGoHome_mVolt_ = (double(earlyGoHomeVolt-earlyGoHomeVolt_)*1000); // subtract the voltage and multiply by 1000 to get the milivolts
 
+    char* allDayMowingCheckBoxValue = "unchecked";
+    if (allDayMowing==true){
+      allDayMowingCheckBoxValue = "checked";
+    }    
+
     //create website
-    snprintf(temp, 1500,
+    snprintf(temp, 2000,
              "<html>\
               <head>\
                 <title>LandXcape</title>\
@@ -520,7 +587,10 @@ static void handleAdministration(void){
                   <form method='POST' action='/newAdminConfiguration'>\
                   Battery history: Show <input type='number' name='batHistMinShown' value='%02d' min=60 max=400> minutes<br>\     
                   Activate function \"Go Home Early\" <input type='checkbox' name='goHomeEarly' %s><br>\
-                  If activated, send LandXcape home at: <input type='number' name='batVol' value='%02d' min=17 max=20> V <input type='number' name='batMiliVolt' value='%02d' min=000 max=999>mV<br>\ 
+                  If activated, send LandXcape home at: <input type='number' name='batVol' value='%02d' min=16 max=20> V <input type='number' name='batMiliVolt' value='%02d' min=000 max=999>mV<br>\ 
+                  If not activated, this value is used to define the battery voltage <br> where no new round of mowing should be started before charging again.<br>\ 
+                  <br>\
+                  Activate function \"Mowing from sunrise to sunset\" <input type='checkbox' name='allDayMowing_' %s><br>\
                   <br>\
                   <input type='submit' value='Submit'></form>\
                   <form method='POST' action='/'><button type='submit'>Cancel</button></form>\                  
@@ -533,7 +603,7 @@ static void handleAdministration(void){
                     </tr>\       
                   </table>\
                 </body>\
-              </html>",lastXXminBatHist,earlyGoHomeCheckBoxValue,earlyGoHomeVolt_,earlyGoHome_mVolt_
+              </html>",lastXXminBatHist,earlyGoHomeCheckBoxValue,earlyGoHomeVolt_,earlyGoHome_mVolt_,allDayMowingCheckBoxValue
               );
     wwwserver.send(200, "text/html", temp);
     digitalWrite(LED_BUILTIN, HIGH); //show connection via LED 
@@ -562,6 +632,8 @@ static void computeNewAdminConfig(void){
     int batVolt = wwwserver.arg("batVol").toInt();
     int batMiliVolt = wwwserver.arg("batMiliVolt").toInt();
     earlyGoHomeVolt = (double)batVolt+(double) batMiliVolt/1000;
+
+    allDayMowing = (boolean)wwwserver.hasArg("allDayMowing_");
     
     char temp[1200];
     snprintf(temp, 1200,
@@ -579,11 +651,12 @@ static void computeNewAdminConfig(void){
                   <p>LastXXminBatHist Variable changed to: %02d</p>\
                   <p>GoHomeEarly Function: %d</p>\
                   <p>GoHomeEarly Voltage:: %2.3f</p>\
+                  <p>Mow from sunrise to Sunset Function: %d</p>\
               </body>\
             </html>",
-            hour(),minute(),second(),lastXXminBatHist,earlyGoHome,earlyGoHomeVolt
+            hour(),minute(),second(),lastXXminBatHist,earlyGoHome,earlyGoHomeVolt,allDayMowing
             );
-  wwwserver.send(200, "text/html", temp);
+    wwwserver.send(200, "text/html", temp);
 
     if (debugMode>=1){
       Serial.println((String)"New Admin config transmitted at UTC Time:"+hour()+":"+minute()+":"+second()+" " + year());
@@ -592,6 +665,7 @@ static void computeNewAdminConfig(void){
       Serial.println((String)"Battery History Showtime"+lastXXminBatHist);
       Serial.println((String)"GoHomeEarly Function:"+earlyGoHome);
       Serial.println((String)"GoHomeEarly Voltage:"+earlyGoHomeVolt);
+      Serial.println((String)"Mow from sunrise to Sunset Function:"+allDayMowing);
     }
     
     computeGraphBasedOnBatValues();
@@ -813,6 +887,7 @@ static boolean syncTimeViaNTP(void){
       }
     
    udp.stop();
+   timeAdjusted = false; //mark current time as UTC time
    return true;
 }
 
@@ -988,12 +1063,34 @@ void computeGraphBasedOnBatValues(void) {
 
 /**
  * resetWemosBoard via SW reset
+ * Send User afterwards back to the root site of the webserver
  */
 
 void resetWemosBoard(void){
   if (debugMode>=1){
           Serial.println("Software reset triggered. Reseting...");
   }
+
+  char temp[700];
+  snprintf(temp, 700,
+           "<html>\
+            <head>\
+              <title>LandXcape</title>\
+              <style>\
+                body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
+              </style>\
+              <meta http-equiv='Refresh' content='2; url=\\'>\
+            </head>\
+              <body>\
+                <h1>LandXcape</h1>\
+                <p><\p>\
+                <p>Software reset triggered. Reseting... at Time: %02d:%02d:%02d</p>\
+              </body>\
+            </html>",
+            hour(),minute(),second()
+            );
+  wwwserver.send(200, "text/html", temp);
+  delay(200);//to allow the webserver to send the site before resetting ;)
   ESP.restart();
 }
 
@@ -1026,7 +1123,7 @@ static void computeSunriseSunsetInformation(void){
   }
 
   if (debugMode>=1){
-    Serial.println(SummerTimeActive);
+    Serial.println((String)"Summertime active:" + SummerTimeActive);
     Serial.println((String)"Sunrise for today:"+sunrise/60+"h " + sunrise%60 + "min");
     Serial.println((String)"Sunset for today:"+sunset/60+"h " + sunset%60 + "min");
   }
@@ -1058,4 +1155,77 @@ boolean summertime_EU(int year, byte month, byte day, byte hour, byte tzHours)
   }
   NTPUpdateSuccessful = syncTimeViaNTP(); //resync time from the NTP just to ensure correctness
   computeSunriseSunsetInformation(); //compute the new sunrise and sunset for today
+  changeUTCtoLocalTime();//change time to local time
  }
+
+/**
+ * checkBatValues if we are charging or within the charging station
+ * sets automatically the isCharging boolean variable in the right state
+ * -> sets it to not charging whenever the battery voltage is below the given return voltage initial 17.5V( -> since a new run should then be done after the next charge and not before
+ */
+
+static void checkBatValues(void){
+
+  if (debugMode>=2){
+    Serial.println("check Bat Values triggered");
+    Serial.println((String)"earlyGoHomeVolt:"+earlyGoHomeVolt+" batteryVoltage"+batteryVoltage + " at UTC Time:"+hour()+":"+minute()+":"+second()+" " + year());;
+  }
+    if (earlyGoHomeVolt>=batteryVoltage){
+      isCharging = false;
+      return;
+    }
+    //compare current battery volt value against value 3minutes and then if positive 5 minutes ago to exclude high value during driving downwards or on even ground when before climbing has occured
+    if (batteryVoltage>batterVoltageHistory[(batVoltHistCounter-3%maxBatHistValues)]){
+      if (batteryVoltage>batterVoltageHistory[(batVoltHistCounter-5%maxBatHistValues)]){
+        isCharging = true;
+        hasCharged = true;
+        robiAtHomeOrOnTheWayHome = true;
+        if (debugMode>=2){
+          Serial.println((String)"Charging startet at UTC Time:"+hour()+":"+(minute()-5)+":"+second()+" " + year());
+        }
+        return;
+      }
+    }else{
+       isCharging = false; //we are consuming energy so we are not charging
+    }
+}
+
+/**
+ * changeUTCtoLocalTime as default time incl. DST / summer time adjusment
+ */
+static void changeUTCtoLocalTime(void){
+
+      if(timeAdjusted == true || NTPUpdateSuccessful == false ){ //Time has been already adjusted or if the NTP Update is still ongoing
+  
+        if (debugMode>=1){
+          Serial.println((String)"Time has been already adjusted or if the NTP Update is still ongoing at UTC Time:"+hour()+":"+(minute()-5)+":"+second()+" " + year());
+        }
+          
+        return;
+      }
+
+      if (debugMode>=1){
+        Serial.println((String)"changeUTCtoLocalTime called at current UTC Time:"+hour()+":"+(minute()-5)+":"+second()+" " + year());
+      }
+
+      int timeChange = 0;
+
+      if (SummerTimeActive==true){
+        timeChange=timeChange+60*60; //1hour ahead so 60min x 60 seconds
+      }
+      if (UTCtimezone>=1){
+        for (int i=0;UTCtimezone>i;i++){
+          timeChange=timeChange+60*60; //add seconds for each hour ahead of UTC
+        }
+      }
+      if (UTCtimezone<=0){
+        for (int i=0;UTCtimezone<=i;i--){
+          timeChange=timeChange-60*60; //subtract seconds for each hour behind UTC
+        }
+      }
+      if (debugMode>=1){
+        Serial.println((String)"Time will be adjusted by:"+timeChange);
+      }
+      adjustTime(timeChange);
+      timeAdjusted = true;
+}
