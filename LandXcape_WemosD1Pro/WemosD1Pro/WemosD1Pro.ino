@@ -22,8 +22,9 @@ int baudrate = 115200;
 int delayToReconnectTry = 15000;
 int debugMode = 1; //0 = off, 1 = moderate debug messages, 2 = all debug messages
 boolean NTPUpdateSuccessful = false;
-double version = 0.6411; //changes:Button press time shorten a bit, log Entries set to 80, Gcc modulo behavior at chargingPredictFunction fixed in rare cases, ntp delay slightly increased to 1.4sec,Debug Msg adapted (bat values vs history),small bug fixes(ntp releated)
-//UTC time notation exchanged vs local time (since it is local time now ;)),bugfix mowing from sunrise to sunset,Uptime supports now days as well, Bugfix bat history
+double version = 0.6413; //changes: log entries reduced to 60 because of mem consumption, Rain sensor cable removed and connected to relay. Now Switchable via relay to promote rain situation to LandXcape if necessery. Digital rain detection via  Pi YL-38 sensor board connected to WEMOS
+//realized. If it is raining, Robi is stoped and sent home.Afterwards we promote the rain forward to the LandXcape for now to ensure the 180min break.
+
 int lastReadingSec=0;
 int lastReadingMin=0;
 
@@ -48,6 +49,10 @@ boolean robiAtHomeOrOnTheWayHome = true;
 boolean isCharging = false;
 boolean hasCharged = false;
 
+int rainSensorShortcutTime = 10000; // 10sek shortcut the LandXcape Rain sensor cable with our relay since it only periodically checks for rain
+boolean rainSensorResults[10]; //boolean array for the rain sensor checks and its past values
+int rainSensorCounter = 0;
+
 //admin variables
 int lastXXminBatHist = 100;
 const int maxBatHistValues = 400; // represents the max width of the statistic svg's
@@ -56,7 +61,7 @@ boolean earlyGoHome = false;
 double earlyGoHomeVolt = 17.5;
 int dailyTasks = -1;
 boolean allDayMowing = false; //lawn mowing from sunrise to sunset
-const int maxLogEntries = 80;
+const int maxLogEntries = 60;
 String logRotateBuffer [maxLogEntries];
 int logRotateCounter = 0;
 
@@ -66,6 +71,8 @@ int HOME = D5;
 int OKAY = D7;
 int BATVOLT = A0;
 int PWR = D6;
+int REGENSENSOR_LXC = D2;
+int REGENSENSOR_WEMOS = D4;
 
 ESP8266WebServer wwwserver(80);
 String content = "";
@@ -90,12 +97,19 @@ int sunset = -1; //init value
 int UTCtimezone = 1;
 boolean timeAdjusted = false;;
 
-
+/**
+ * Initialization process - setup ()
+ */
 void setup() {
   
   //initialize logRotateBuffer at first
   for (int i=0; i<maxLogEntries;i++){
     logRotateBuffer[i] = " ";
+  }
+
+  //initialize rainSensorResults buffer
+  for(int i=0; i<10;i++){
+    rainSensorResults[i]=true;
   }
 
   if (debugMode>=1){
@@ -160,11 +174,14 @@ void setup() {
   pinMode(OKAY,OUTPUT); //OK Button
   pinMode(BATVOLT,INPUT); //Battery Voltage sensing via Analog Input
   pinMode(PWR,OUTPUT);
+  pinMode(REGENSENSOR_LXC,OUTPUT);
+  pinMode(REGENSENSOR_WEMOS,INPUT);
   digitalWrite(STOP,HIGH);
   digitalWrite(START,HIGH);
   digitalWrite(HOME,HIGH);
   digitalWrite(OKAY,HIGH);
   digitalWrite(PWR,HIGH);
+  digitalWrite(REGENSENSOR_LXC,HIGH);
 
   //prepare / init statistics
   A0reading = analogRead(BATVOLT);
@@ -205,6 +222,11 @@ void loop() {
 
   //update statistics every second
   if (lastReadingSec!=second()){
+
+    boolean rainSensorCheckValue = digitalRead(REGENSENSOR_WEMOS);
+    rainSensorCounter = rainSensorCounter%10;
+    rainSensorResults[rainSensorCounter] = rainSensorCheckValue;
+    rainSensorCounter++;
 
     double oldBatValue = batteryVoltage; //old value saved
     //new value read in
@@ -255,6 +277,17 @@ void loop() {
             }
           }
         }  
+        //check for rain
+        if (getRainSensorStatus()){ //if true then rain has been detected -> send robi home
+            if (debugMode>=1){
+                    Serial.println((String)"[loop]Rain has been detected. Sending Robi home to base...");
+                    writeDebugMessageToInternalLog((String)"[loop]Rain has been detected. Sending Robi home to base...");
+            }
+             handleStopMowing(); //stop mowing to allow to send robi home
+             handleGoHome(); //send Robi home
+             reportRainToLandXCape(); // for now report rain to LandXcape to trigger the 180min break before the next try
+        }
+        
         lastReadingMin = minute();
       }
             
@@ -525,6 +558,11 @@ static void showStatistics(void){
     }else{
       robiAtHomeOrOnTheWayHomeValue = false_;
     }
+
+    char * rainStatus_ = "Not raining";
+    if(getRainSensorStatus()){
+      rainStatus_ = "raining";
+    }
         
     char temp[2000];
     snprintf(temp, 2000,
@@ -545,6 +583,7 @@ static void showStatistics(void){
                   <p>Computed sunrise approx: %s</p>\
                   <p>Computed sunset approx: %s</p>\
                   <p>HasCharged/isCharging: %s/%s   (OnTheWay)Home: %s</p>\
+                  <p>Weather status: %s</p>\
                   <p>Version: %02lf</p>\
                   \
                   <table style='width:450px'>\
@@ -574,7 +613,7 @@ static void showStatistics(void){
                   <form method='POST' action='/'><button type='submit'>Back to main menu</button></form>\
                 </body>\
               </html>",
-              days,hr%60, min % 60, sec % 60,hour(),minute(),second(),day(),month(),year(),sunrise__,sunset__,hasChargedValue,isChargingValue,robiAtHomeOrOnTheWayHomeValue,
+              days,hr%60, min % 60, sec % 60,hour(),minute(),second(),day(),month(),year(),sunrise__,sunset__,hasChargedValue,isChargingValue,robiAtHomeOrOnTheWayHomeValue,rainStatus_,
               version,batteryVoltage,lowestBatVoltage,highestBatVoltage,cellVoltage,lowestCellVoltage,highestCellVoltage,lastXXminBatHist
               );
 
@@ -1253,12 +1292,12 @@ static void checkBatValues(void){
     }
     //compare current battery volt value against value 3minutes and then if positive 5 minutes ago to exclude high value during driving downwards or on even ground when before climbing has occured
     //to prevent gcc behavior as described above... sigh
-    int batVoltHistCounter_tmp3=batVoltHistCounter;
-    int batVoltHistCounter_tmp5=batVoltHistCounter;
+    int batVoltHistCounter_tmp3=batVoltHistCounter-3;
+    int batVoltHistCounter_tmp5=batVoltHistCounter-5;
     if (batVoltHistCounter<=3){
       batVoltHistCounter_tmp3=maxBatHistValues-4; 
     }
-    
+ 
     if (batteryVoltage>batterVoltageHistory[batVoltHistCounter_tmp3]){
           if (batVoltHistCounter<=5){
             batVoltHistCounter_tmp5=maxBatHistValues-6; 
@@ -1381,5 +1420,52 @@ static void presentLogEntries(void){
           Serial.println((String)"[presentLogEntries]presentLogEntries called and executed.");
           writeDebugMessageToInternalLog((String)"[presentLogEntries]presentLogEntries called and executed.");
   }
-  
+}
+
+/**
+ * reportRainToLandXCape - since the rain sensor is no longer directly connected we use a relay to shortcut the sensor cables to allow the LandXCape mainboard to detect the rain or at least it things it rains 
+ */
+
+static void reportRainToLandXCape (void){
+
+  if (debugMode>=1){
+          Serial.println((String)"[reportRainToLandXCape]Rain sensor will be triggered to report the LandXcape mainboard that it rains or at least it thinks so.");
+          writeDebugMessageToInternalLog((String)"[reportRainToLandXCape]Rain sensor will be triggered to report the LandXcape mainboard that it rains or at least it thinks so.");
+  }
+  digitalWrite(REGENSENSOR_LXC,LOW);
+  delay(rainSensorShortcutTime);
+  digitalWrite(REGENSENSOR_LXC,HIGH);
+}
+
+/**
+ * getRainSensorStatus returns true if at least 7 of 10 values indicate rain 
+ * ofterwise false
+ */
+
+static boolean getRainSensorStatus(void){
+
+  if (debugMode>=2){
+          Serial.println((String)"[getRainSensorStatus]Analysis of the last 10 sensor values has been triggered...");
+          writeDebugMessageToInternalLog((String)"[getRainSensorStatus]Analysis of the last 10 sensor values has been triggered...");
+  }
+
+  int amountOfPositiveRainValues = 0;
+
+  for(int i=0;i<10;i++){
+    amountOfPositiveRainValues= amountOfPositiveRainValues + rainSensorResults[i];
+  }
+
+  if (amountOfPositiveRainValues<=3){
+    if (debugMode>=2){
+            Serial.println((String)"[getRainSensorStatus]Result: It Rains - "+amountOfPositiveRainValues);
+            writeDebugMessageToInternalLog((String)"[getRainSensorStatus]Result: It Rains - "+amountOfPositiveRainValues);
+    }
+      return true;
+  }else{
+    if (debugMode>=2){
+            Serial.println((String)"[getRainSensorStatus]Result: It does not rain - "+amountOfPositiveRainValues);
+            writeDebugMessageToInternalLog((String)"[getRainSensorStatus]Result: It does not rain - "+amountOfPositiveRainValues);
+    }
+      return false;
+    }
 }
