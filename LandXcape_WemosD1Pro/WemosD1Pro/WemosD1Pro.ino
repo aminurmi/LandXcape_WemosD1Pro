@@ -6,24 +6,23 @@
  * Furthmore supports Updates via WLAN via Web /updateLandXcape or via terminal -> curl -f "image=@firmware.bin" LandXcapeIPAddress/updateBin
  * 
  */
- 
+#include <FS.h>
 #include <TimeLib.h>
 #include <Time.h>
 #include <WiFiUdp.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 
-
 //variables
 const char* ssid     = "Linux_2";
 const char* password = "linuxrulezz";
 const int robiPinCode = 1881;
 int baudrate = 115200;
-int delayToReconnectTry = 15000;
 int debugMode = 1; //0 = off, 1 = moderate debug messages, 2 = all debug messages
 boolean NTPUpdateSuccessful = false;
-double version = 0.6413; //changes: log entries reduced to 60 because of mem consumption, Rain sensor cable removed and connected to relay. Now Switchable via relay to promote rain situation to LandXcape if necessery. Digital rain detection via  Pi YL-38 sensor board connected to WEMOS
-//realized. If it is raining, Robi is stoped and sent home.Afterwards we promote the rain forward to the LandXcape for now to ensure the 180min break.
+double version = 0.6420; //changes: Memory optimizations (log entry presenting should be now 50% less memory consuming), rain sensor will be read out only 10 seconds from now on and the digital input pin on the Wemos be deactivated during inactivity time, 
+//BatGraph - Mem Consumption with 100entries 6,2kb RAM and with 400 Entries 18.2kb RAM -> because of Heap/memory limitations the full picture does no longer fit into memory as one and is therefore cut apart... -> implementing Filesystem for storing on the flashdrive,
+//and streaming files directly to the client without RAM usage for buffering :D Works and the SVG bug for 400 entries is gone :D 
 
 int lastReadingSec=0;
 int lastReadingMin=0;
@@ -56,7 +55,6 @@ int rainSensorCounter = 0;
 //admin variables
 int lastXXminBatHist = 100;
 const int maxBatHistValues = 400; // represents the max width of the statistic svg's
-String svgBatHistGraph = "";
 boolean earlyGoHome = false;
 double earlyGoHomeVolt = 17.5;
 int dailyTasks = -1;
@@ -95,13 +93,16 @@ int sunrise = -1; //init value
 int sunset = -1; //init value
 
 int UTCtimezone = 1;
-boolean timeAdjusted = false;;
+boolean timeAdjusted = false;
+
+//Filesystem variables
+const char* batGraph = "/data/BatGraph.svg";
 
 /**
  * Initialization process - setup ()
  */
 void setup() {
-  
+
   //initialize logRotateBuffer at first
   for (int i=0; i<maxLogEntries;i++){
     logRotateBuffer[i] = " ";
@@ -116,7 +117,7 @@ void setup() {
     Serial.begin(baudrate);
     delay(10);   
   }
-
+  
   pinMode(LED_BUILTIN,OUTPUT);
   digitalWrite(LED_BUILTIN, HIGH); //LED off for now
 
@@ -175,13 +176,14 @@ void setup() {
   pinMode(BATVOLT,INPUT); //Battery Voltage sensing via Analog Input
   pinMode(PWR,OUTPUT);
   pinMode(REGENSENSOR_LXC,OUTPUT);
-  pinMode(REGENSENSOR_WEMOS,INPUT);
+  pinMode(REGENSENSOR_WEMOS,OUTPUT); // will be switched on every 10 seconds
   digitalWrite(STOP,HIGH);
   digitalWrite(START,HIGH);
   digitalWrite(HOME,HIGH);
   digitalWrite(OKAY,HIGH);
   digitalWrite(PWR,HIGH);
   digitalWrite(REGENSENSOR_LXC,HIGH);
+  digitalWrite(REGENSENSOR_WEMOS,HIGH);// no signal since it is originally an input which is switched off
 
   //prepare / init statistics
   A0reading = analogRead(BATVOLT);
@@ -192,6 +194,12 @@ void setup() {
   highestBatVoltage = batteryVoltage;
   lowestCellVoltage = batteryVoltage/5;
   highestCellVoltage = batteryVoltage/5;
+
+  //initialize filesystem
+  fs::SPIFFSConfig filesystem_cfg; // to overcome the current SPIFFS "bug" in 2.5.2
+  filesystem_cfg.setAutoFormat(false);
+  SPIFFS.setConfig(filesystem_cfg);
+  SPIFFS.begin();
 
   //initialize SVG Graphics array with just now values
   for (int i=0;i<maxBatHistValues;i++){
@@ -210,7 +218,6 @@ void setup() {
 }
 
 void loop() {
-  
   //Webserver section
   wwwserver.handleClient(); 
 
@@ -223,10 +230,17 @@ void loop() {
   //update statistics every second
   if (lastReadingSec!=second()){
 
-    boolean rainSensorCheckValue = digitalRead(REGENSENSOR_WEMOS);
-    rainSensorCounter = rainSensorCounter%10;
-    rainSensorResults[rainSensorCounter] = rainSensorCheckValue;
-    rainSensorCounter++;
+    //since the digital input are producing a lot of noise from the detector board we reduce the readings to every 10 seconds like on the LandXcape board as well and switch the digital input offline in the mean time
+    if (second()%10==5){ //read every 5th second -> :05,:15,:25...
+        pinMode(REGENSENSOR_WEMOS,INPUT);//switch on the input mode
+        delay(100);
+        rainSensorCounter = rainSensorCounter%10;
+        rainSensorResults[rainSensorCounter] = digitalRead(REGENSENSOR_WEMOS);
+        rainSensorCounter++;
+        pinMode(REGENSENSOR_WEMOS,OUTPUT); //switch off the input mode
+        digitalWrite(REGENSENSOR_LXC,HIGH); //no signal to the rain sensor board ;)
+    }
+
 
     double oldBatValue = batteryVoltage; //old value saved
     //new value read in
@@ -572,7 +586,7 @@ static void showStatistics(void){
                 <style>\
                   body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
                 </style>\
-                <meta http-equiv='Refresh' content='3; url=\\stats'>\
+                <meta http-equiv='Refresh' content='10; url=\\stats'>\
               </head>\
                 <body>\
                   <h1>LandXcape Statistics</h1>\
@@ -667,6 +681,10 @@ static void handleAdministration(void){
                   <br>\
                   Activate function \"Mowing from sunrise to sunset\" <input type='checkbox' name='allDayMowing_' %s><br>\
                   <br>\
+                  FileSystem Functions: <br>\
+                  Format FileSystem ATTENTION All persistent Data will be lost ATTENTION <input type='checkbox' name='formatFlashStorage'><br>\
+                  This must be done once before the filesystem can be used.<br>\
+                  <br>\
                   <input type='submit' value='Submit'></form>\
                   <form method='POST' action='/'><button type='submit'>Cancel</button></form>\                  
                   <p><\p>\
@@ -710,6 +728,8 @@ static void computeNewAdminConfig(void){
     earlyGoHomeVolt = (double)batVolt+(double) batMiliVolt/1000;
 
     allDayMowing = (boolean)wwwserver.hasArg("allDayMowing_");
+
+    boolean formatFlashStorage = (boolean)wwwserver.hasArg("formatFlashStorage");
     
     char temp[1200];
     snprintf(temp, 1200,
@@ -728,9 +748,10 @@ static void computeNewAdminConfig(void){
                   <p>GoHomeEarly Function: %d</p>\
                   <p>GoHomeEarly Voltage:: %2.3f</p>\
                   <p>Mow from sunrise to Sunset Function: %d</p>\
+                  <p>Flash Storage will be formated: %d</p>\
               </body>\
             </html>",
-            hour(),minute(),second(),lastXXminBatHist,earlyGoHome,earlyGoHomeVolt,allDayMowing
+            hour(),minute(),second(),lastXXminBatHist,earlyGoHome,earlyGoHomeVolt,allDayMowing,formatFlashStorage
             );
     wwwserver.send(200, "text/html", temp);
 
@@ -749,6 +770,8 @@ static void computeNewAdminConfig(void){
       writeDebugMessageToInternalLog((String)"[computeNewAdminConfig]GoHomeEarly Voltage:"+earlyGoHomeVolt);
       Serial.println((String)"[computeNewAdminConfig]Mow from sunrise to Sunset Function:"+allDayMowing);
       writeDebugMessageToInternalLog((String)"[computeNewAdminConfig]Mow from sunrise to Sunset Function:"+allDayMowing);
+      Serial.println((String)"[computeNewAdminConfig]Flash storage shall be formated:"+formatFlashStorage);
+      writeDebugMessageToInternalLog((String)"[computeNewAdminConfig]MFlash storage shall be formated:"+formatFlashStorage);
     }
     
     computeGraphBasedOnBatValues();
@@ -757,6 +780,16 @@ static void computeNewAdminConfig(void){
       Serial.println("[computeNewAdminConfig]Update of the battery voltage picture realized.");
       writeDebugMessageToInternalLog((String)"[computeNewAdminConfig]Update of the battery voltage picture realized.");
     }
+
+    if (formatFlashStorage){ //Format Filesystem as whished
+      if(debugMode>=1){      
+        Serial.println("[computeNewAdminConfig]Formatting flash storage as selected...");
+        writeDebugMessageToInternalLog((String)"[computeNewAdminConfig]Formatting flash storage as selected...");
+      }
+
+      formatFS();
+    }
+    
   
     digitalWrite(LED_BUILTIN, HIGH); //show connection via LED 
 }
@@ -1031,6 +1064,10 @@ static void handleUpdateViaBinary(void){
           Serial.println("[handleUpdateViaBinary]handleUpdateViaBinary function finished...");
           writeDebugMessageToInternalLog((String)"[handleUpdateViaBinary]handleUpdateViaBinary function finished...");
   }
+
+  //unmount filesystem before rebooting
+  SPIFFS.end();
+  delay(200); //wait 200ms to ensure that the Filesystem has been unmounted
   
   digitalWrite(LED_BUILTIN, HIGH); //show working process via LED 
   ESP.restart();
@@ -1107,11 +1144,29 @@ static void storeBatVoltHistory (double actualBatVolt){
  * SVG is computed only once every minute and stored as a String for presentation
  */
 void drawGraphBasedOnBatValues(void) {
-  wwwserver.send(200, "image/svg+xml", svgBatHistGraph);
+
+  if (debugMode>=2){
+          Serial.println("[drawGraphBasedOnBatValues]drawGraphBasedOnBatValues has been triggered...");
+          writeDebugMessageToInternalLog((String)"[drawGraphBasedOnBatValues]drawGraphBasedOnBatValues has been triggered...");
+  }
+  File batGraphFile = SPIFFS.open(batGraph,"r");
+  if(!batGraphFile){ //check if we have been able to open/create the file, if not abort
+      if (debugMode>=1){
+          Serial.println("[drawGraphBasedOnBatValues]batGraph.svg file opening failed. Aborting...");
+          writeDebugMessageToInternalLog((String)"[drawGraphBasedOnBatValues]batGraph.svg file opening failed. Aborting...");
+      }
+      return;   
+  }
+
+  //stream the file :D
+  wwwserver.streamFile(batGraphFile, "image/svg+xml");
+
+  batGraphFile.close();
 }
 
 /**
  * computeGraphBasedOnBatValues as a SVG Graphics
+ * To reduce memory consumption -18.2kb with 400 values and 6.4 with 100 values, the SVG will now always be stored/written and read to or from the flash memory. This alows us to use a decent amount of memory again.
  */
 void computeGraphBasedOnBatValues(void) {
 
@@ -1120,12 +1175,26 @@ void computeGraphBasedOnBatValues(void) {
           writeDebugMessageToInternalLog((String)"[computeGraphBasedOnBatValues]computeGraphBasedOnBatValues has been triggered...");
   }
 
-  svgBatHistGraph = ""; //delete old SVG Graphics
+  //open file at FileSystem
+  File batGraphFile = SPIFFS.open(batGraph,"w");
+  if(!batGraphFile){ //check if we have been able to open/create the file, if not abort
+      if (debugMode>=1){
+          Serial.println("[computeGraphBasedOnBatValues]batGraph.svg file creation failed. Aborting...");
+          writeDebugMessageToInternalLog((String)"[computeGraphBasedOnBatValues]batGraph.svg file creation failed. Aborting...");
+      }
+      return;   
+  }
+  
+  String svgBatHistGraph = ""; 
   char temp[100];
   
   svgBatHistGraph += "<svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.1\" width=\"400\" height=\"155\">\n";
   svgBatHistGraph += "<rect width=\"400\" height=\"155\" fill=\"rgb(250, 230, 210)\" stroke-width=\"1\" stroke=\"rgb(0, 0, 0)\" />\n";
   svgBatHistGraph += "<g stroke=\"black\">\n";
+
+  //write initial part of the SVG
+  batGraphFile.println(svgBatHistGraph);
+  svgBatHistGraph= ""; //destroy string to save memory
 
   int counter = batVoltHistCounter%maxBatHistValues;
   
@@ -1149,19 +1218,21 @@ void computeGraphBasedOnBatValues(void) {
   }
 
   for (double x = 0; x < (double)maxBatHistValues; x=x+dotWidth) { 
-  
+ // Serial.println((String)"x:"+x+" maxBatHistValues="+maxBatHistValues+"dotWidth: "+dotWidth );
     int y2 = (batterVoltageHistory[counter%maxBatHistValues]-lowestBatVoltage)*amplifier;
     
     sprintf(temp, "<line x1=\"%d\" y1=\"%d\" x2=\"%d\" y2=\"%d\" stroke-width=\"1\" />\n", (int)x, 150-y, (int)(x + dotWidth), 150-y2);
-    svgBatHistGraph += temp;
+    batGraphFile.print(temp);
+    
     y = y2;
     counter++;
   }
-  svgBatHistGraph += "</g>\n</svg>\n";
   
+  batGraphFile.println("</g>\n</svg>\n");
+  batGraphFile.close();
   if (debugMode>=2){
-          Serial.println("[computeGraphBasedOnBatValues]computeGraphBasedOnBatValues has been finished...");
-          writeDebugMessageToInternalLog((String)"[computeGraphBasedOnBatValues]computeGraphBasedOnBatValues has been finished...");
+          Serial.println("[computeGraphBasedOnBatValues]computeGraphBasedOnBatValues has been finished and as file saved...");
+          writeDebugMessageToInternalLog((String)"[computeGraphBasedOnBatValues]computeGraphBasedOnBatValues has been finished and as file saved...");
   }
 }
 
@@ -1195,7 +1266,10 @@ void resetWemosBoard(void){
             hour(),minute(),second()
             );
   wwwserver.send(200, "text/html", temp);
-  delay(200);//to allow the webserver to send the site before resetting ;)
+
+  //unmount filesystem before rebooting
+  SPIFFS.end(); //wait 200ms to ensure that the Filesystem has been unmounted
+  delay(200);// and to allow the webserver to send the site before resetting ;)
   ESP.restart();
 }
 
@@ -1386,13 +1460,7 @@ static void changeUTCtoLocalTime(void){
 
 static void presentLogEntries(void){
 
-  String logEntries_ = "";
   int counter = ((logRotateCounter+1)%maxLogEntries); //to get the latest entry
-
-  for (int i=0;i<maxLogEntries;i++){
-    logEntries_ = logEntries_ + logRotateBuffer[counter] + "<br>";
-    counter = (counter+1)%maxLogEntries;
-  }
 
   String tmp = "<html>\
                 <head>\
@@ -1410,9 +1478,14 @@ static void presentLogEntries(void){
                         <th><form method='POST' action='/configure'><button type='submit'>Exit</button></form>\ </th>\
                       </tr>\       
                     </table>\
-                   <br>\
-                   "+logEntries_+"\
-                  </body>\
+                   <br>";
+                   
+                    for (int i=0;i<maxLogEntries;i++){
+                      tmp = tmp + logRotateBuffer[counter] + "<br>";
+                      counter = (counter+1)%maxLogEntries;
+                    }
+                    
+      tmp = tmp + "</body>\
                 </html>";
   wwwserver.send(200, "text/html", tmp);
 
@@ -1469,3 +1542,13 @@ static boolean getRainSensorStatus(void){
       return false;
     }
 }
+
+/**
+ * formatFS - call this function if a resetting for the FS is needed
+ * return: true if successful or false otherwise
+ */
+
+ static boolean formatFS (void){
+
+  return SPIFFS.format();
+ }
