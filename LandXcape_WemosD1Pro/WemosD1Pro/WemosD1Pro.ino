@@ -20,9 +20,8 @@ const int robiPinCode = 1881;
 int baudrate = 115200;
 int debugMode = 1; //0 = off, 1 = moderate debug messages, 2 = all debug messages
 boolean NTPUpdateSuccessful = false;
-double version = 0.6420; //changes: Memory optimizations (log entry presenting should be now 50% less memory consuming), rain sensor will be read out only 10 seconds from now on and the digital input pin on the Wemos be deactivated during inactivity time, 
-//BatGraph - Mem Consumption with 100entries 6,2kb RAM and with 400 Entries 18.2kb RAM -> because of Heap/memory limitations the full picture does no longer fit into memory as one and is therefore cut apart... -> implementing Filesystem for storing on the flashdrive,
-//and streaming files directly to the client without RAM usage for buffering :D Works and the SVG bug for 400 entries is gone :D 
+double version = 0.6440; //changes: LBugfix: After formatting the filesystem, the filesystem is restartet propably to ensure it working without reboot of the WEMOS board,BugFix Uptime hours,
+//NTP Time response delay expanded to 3 seconds - with 2 seconds some misses happend from time to time, 
 
 int lastReadingSec=0;
 int lastReadingMin=0;
@@ -44,9 +43,18 @@ double highestCellVoltage = 0;
 double batterVoltageHistory [400];
 int batVoltHistCounter = 0;
 
-boolean robiAtHomeOrOnTheWayHome = true;
+//boolean robiAtHomeOrOnTheWayHome = true;
+//boolean isCharging = false;
+//boolean hasCharged = false;
+
+boolean robiAtHome = false;
+boolean robiOnTheWayHome = false;
 boolean isCharging = false;
 boolean hasCharged = false;
+boolean raining = false;
+const int rainingDelay = 20; //in minutes delay after rain has been detected
+int rainingDelay_ = rainingDelay; //delay counter to subtract from
+
 
 int rainSensorShortcutTime = 10000; // 10sek shortcut the LandXcape Rain sensor cable with our relay since it only periodically checks for rain
 boolean rainSensorResults[10]; //boolean array for the rain sensor checks and its past values
@@ -56,12 +64,12 @@ int rainSensorCounter = 0;
 int lastXXminBatHist = 100;
 const int maxBatHistValues = 400; // represents the max width of the statistic svg's
 boolean earlyGoHome = false;
-double earlyGoHomeVolt = 17.5;
+double earlyGoHomeVolt = 17.0;
 int dailyTasks = -1;
 boolean allDayMowing = false; //lawn mowing from sunrise to sunset
 const int maxLogEntries = 60;
 String logRotateBuffer [maxLogEntries];
-int logRotateCounter = 0;
+int logRotateCounter = 0; //for RAM storage - deprecated
 
 int STOP = D1;
 int START = D3;
@@ -97,11 +105,18 @@ boolean timeAdjusted = false;
 
 //Filesystem variables
 const char* batGraph = "/data/BatGraph.svg";
+const char* logStorage = "/data/logEntries.txt";
 
 /**
  * Initialization process - setup ()
  */
 void setup() {
+
+  //initialize filesystem
+  fs::SPIFFSConfig filesystem_cfg; // to overcome the current SPIFFS "bug" in 2.5.2
+  filesystem_cfg.setAutoFormat(false);
+  SPIFFS.setConfig(filesystem_cfg);
+  SPIFFS.begin();
 
   //initialize logRotateBuffer at first
   for (int i=0; i<maxLogEntries;i++){
@@ -159,14 +174,14 @@ void setup() {
   wwwserver.on("/BatGraph.svg",drawGraphBasedOnBatValues);
   wwwserver.on("/newAdminConfiguration", HTTP_POST, computeNewAdminConfig);
   wwwserver.on("/resetWemos",resetWemosBoard);
-  wwwserver.on("/logFiles",presentLogEntries);
+  wwwserver.on("/logFiles",presentLogEntriesFromInternalLog);
 
   wwwserver.begin();
   if (debugMode>=1){
     Serial.println("[setup]HTTP server started");
     writeDebugMessageToInternalLog((String)"[setup]HTTP server started");
   }
-  //NTPUpdateSuccessful = syncTimeViaNTP();
+  NTPUpdateSuccessful = syncTimeViaNTP();
 
   //initialize Digital Pins
   pinMode(STOP,OUTPUT); //Stop Button
@@ -195,12 +210,6 @@ void setup() {
   lowestCellVoltage = batteryVoltage/5;
   highestCellVoltage = batteryVoltage/5;
 
-  //initialize filesystem
-  fs::SPIFFSConfig filesystem_cfg; // to overcome the current SPIFFS "bug" in 2.5.2
-  filesystem_cfg.setAutoFormat(false);
-  SPIFFS.setConfig(filesystem_cfg);
-  SPIFFS.begin();
-
   //initialize SVG Graphics array with just now values
   for (int i=0;i<maxBatHistValues;i++){
     storeBatVoltHistory(batteryVoltage);
@@ -208,9 +217,11 @@ void setup() {
   
   computeGraphBasedOnBatValues();
   
-  doItOnceADay();
   dailyTasks = day(); //store the current day for the daily tasks
-  
+
+  computeSunriseSunsetInformation(); //compute the new sunrise and sunset for today
+  changeUTCtoLocalTime();//change time to local time
+    
   if (debugMode>=1){
     Serial.println("[setup]finished...");
     writeDebugMessageToInternalLog((String)"[setup]finished...");
@@ -241,7 +252,6 @@ void loop() {
         digitalWrite(REGENSENSOR_LXC,HIGH); //no signal to the rain sensor board ;)
     }
 
-
     double oldBatValue = batteryVoltage; //old value saved
     //new value read in
     A0reading = analogRead(BATVOLT); 
@@ -269,14 +279,14 @@ void loop() {
         checkBatValues();
 
         //check is "Mowing from Sunrise to Sunset is activated and if yes trigger mowing if we are not charging and we are at home
-        if(allDayMowing==true && robiAtHomeOrOnTheWayHome==true && hasCharged == true && isCharging==false){
+        if(allDayMowing==true && robiAtHome==true && hasCharged == true && isCharging==false){
 
           //check if the sun is up ;)
           int currentTimeInMin = hour()*60+minute();
 
           if(sunrise<=currentTimeInMin && sunset >=currentTimeInMin){ //activate function only while the sun is up and running ;)
 
-              if(robiAtHomeOrOnTheWayHome==true && isCharging==false && hasCharged == true){ //Charging finished, battery voltage drops again since no higher charging voltage is present
+              if(robiAtHome==true && isCharging==false && hasCharged == true && raining == false){ //Charging finished, battery voltage drops again since no higher charging voltage is present
                   if (debugMode>=1){
                     Serial.println((String)"[loop]Mowing from Sunrise to Sunset - start next round at local time:"+hour()+":"+minute()+":"+second());
                     writeDebugMessageToInternalLog((String)"[loop]Mowing from Sunrise to Sunset - start next round at local time:"+hour()+":"+minute()+":"+second());
@@ -292,16 +302,26 @@ void loop() {
           }
         }  
         //check for rain
-        if (getRainSensorStatus()){ //if true then rain has been detected -> send robi home
+        if (getRainSensorStatus() && robiOnTheWayHome == false && robiAtHome == false && raining == false){ //if true then rain has been detected -> send robi home
             if (debugMode>=1){
                     Serial.println((String)"[loop]Rain has been detected. Sending Robi home to base...");
                     writeDebugMessageToInternalLog((String)"[loop]Rain has been detected. Sending Robi home to base...");
             }
              handleStopMowing(); //stop mowing to allow to send robi home
              handleGoHome(); //send Robi home
-             reportRainToLandXCape(); // for now report rain to LandXcape to trigger the 180min break before the next try
+             raining = true;
+             rainingDelay_ = rainingDelay;
+        }else{
+          // check if need to update the raining variable
+          if (raining == true && getRainSensorStatus==false){
+            rainingDelay_--; //subtracts 1 every minute
+
+            if (rainingDelay_<=0){
+              rainingDelay_=rainingDelay; //reset value
+              raining = false; //Raining delay time has passed. Switch raining variable to fals
+            }
+          }
         }
-        
         lastReadingMin = minute();
       }
             
@@ -311,7 +331,7 @@ void loop() {
        } 
     
        //check if Go Home Early is active
-       if (earlyGoHome==true && robiAtHomeOrOnTheWayHome==false){
+       if (earlyGoHome==true && robiAtHome==false && robiOnTheWayHome == false){
         //compare measured voltage against defined one
         if (earlyGoHomeVolt>=batteryVoltage){
              if (debugMode>=1){
@@ -435,7 +455,8 @@ static void handleStartMowing(void){
             );
   wwwserver.send(200, "text/html", temp);
 
-  robiAtHomeOrOnTheWayHome = false; //Robi has just started so it can not be at home or on the way too ;)
+  robiAtHome = false; //Robi has just started so it can not be at home or on the way too ;)
+  robiOnTheWayHome = false; // see above
   isCharging = false; //see above ;)
   hasCharged = false;
 }
@@ -522,7 +543,10 @@ static void handleGoHome(void){
             );
   wwwserver.send(200, "text/html", temp);
 
-  robiAtHomeOrOnTheWayHome=true; // since robi is on the way home
+  robiAtHome = false; //Robi has just sent home so it should not be at home currently or follow the line to mow it
+  robiOnTheWayHome = true; // since robi is on the way home
+  isCharging = false; //see above ;)
+  hasCharged = false;
 }
 
 
@@ -552,7 +576,8 @@ static void showStatistics(void){
     sunset_.toCharArray(sunset__,10);
 
     char* isChargingValue;
-    char* robiAtHomeOrOnTheWayHomeValue;  
+    char* robiAtHomeValue; 
+    char* robiOnTheWayHomeValue; 
     char* hasChargedValue;
 
     if (isCharging){
@@ -567,10 +592,16 @@ static void showStatistics(void){
       hasChargedValue = false_;
     }
 
-    if (robiAtHomeOrOnTheWayHome){
-      robiAtHomeOrOnTheWayHomeValue = true_;
+    if (robiAtHome){
+      robiAtHomeValue = true_;
     }else{
-      robiAtHomeOrOnTheWayHomeValue = false_;
+      robiAtHomeValue = false_;
+    }
+
+    if (robiOnTheWayHome){
+      robiOnTheWayHomeValue = true_;
+    }else{
+      robiOnTheWayHomeValue = false_;
     }
 
     char * rainStatus_ = "Not raining";
@@ -596,7 +627,7 @@ static void showStatistics(void){
                   <p>Date: %02d:%02d:%02d</p>\
                   <p>Computed sunrise approx: %s</p>\
                   <p>Computed sunset approx: %s</p>\
-                  <p>HasCharged/isCharging: %s/%s   (OnTheWay)Home: %s</p>\
+                  <p>HasCharged/isCharging: %s/%s   (OnTheWay)Home: (%s)%s</p>\
                   <p>Weather status: %s</p>\
                   <p>Version: %02lf</p>\
                   \
@@ -627,7 +658,7 @@ static void showStatistics(void){
                   <form method='POST' action='/'><button type='submit'>Back to main menu</button></form>\
                 </body>\
               </html>",
-              days,hr%60, min % 60, sec % 60,hour(),minute(),second(),day(),month(),year(),sunrise__,sunset__,hasChargedValue,isChargingValue,robiAtHomeOrOnTheWayHomeValue,rainStatus_,
+              days,hr%24, min % 60, sec % 60,hour(),minute(),second(),day(),month(),year(),sunrise__,sunset__,hasChargedValue,isChargingValue,robiOnTheWayHomeValue,robiAtHomeValue,rainStatus_,
               version,batteryVoltage,lowestBatVoltage,highestBatVoltage,cellVoltage,lowestCellVoltage,highestCellVoltage,lastXXminBatHist
               );
 
@@ -648,7 +679,7 @@ static void handleAdministration(void){
       writeDebugMessageToInternalLog((String)"[handleAdmin]Administration site requested at local time:"+hour()+":"+minute()+":"+second()+" " + year());
     }
     //preparations
-    char temp[2000];
+    //char temp[2500];
     char* earlyGoHomeCheckBoxValue = "unchecked";
     if (earlyGoHome==true){
       earlyGoHomeCheckBoxValue = "checked";
@@ -662,8 +693,7 @@ static void handleAdministration(void){
     }    
 
     //create website
-    snprintf(temp, 2000,
-             "<html>\
+    String temp = "<html>\
               <head>\
                 <title>LandXcape</title>\
                 <style>\
@@ -674,16 +704,22 @@ static void handleAdministration(void){
                   <h1>LandXcape Administration Site</h1>\
                   <p><\p>\
                   <form method='POST' action='/newAdminConfiguration'>\
-                  Battery history: Show <input type='number' name='batHistMinShown' value='%02d' min=60 max=400> minutes<br>\     
-                  Activate function \"Go Home Early\" <input type='checkbox' name='goHomeEarly' %s><br>\
-                  If activated, send LandXcape home at: <input type='number' name='batVol' value='%02d' min=16 max=20> V <input type='number' name='batMiliVolt' value='%02d' min=000 max=999>mV<br>\ 
+                  Battery history: Show <input type='number' name='batHistMinShown' value='";
+                  
+            temp = temp + lastXXminBatHist +"'  min=60 max=400> minutes<br>\     
+                  Activate function \"Go Home Early\" <input type='checkbox' name='goHomeEarly' "; 
+            temp = temp + earlyGoHomeCheckBoxValue +"><br>\
+                  If activated, send LandXcape home at: <input type='number' name='batVol' value='" + earlyGoHomeVolt_ +"' min=16 max=20> V <input type='number' name='batMiliVolt' value='";
+            temp = temp + earlyGoHome_mVolt_ +"' min=000 max=999>mV<br>\ 
                   If not activated, this value is used to define the battery voltage <br> where no new round of mowing should be started before charging again.<br>\ 
                   <br>\
-                  Activate function \"Mowing from sunrise to sunset\" <input type='checkbox' name='allDayMowing_' %s><br>\
+                  Activate function \"Mowing from sunrise to sunset\" <input type='checkbox' name='allDayMowing_' ";
+            temp = temp + allDayMowingCheckBoxValue+"><br>\
                   <br>\
                   FileSystem Functions: <br>\
-                  Format FileSystem ATTENTION All persistent Data will be lost ATTENTION <input type='checkbox' name='formatFlashStorage'><br>\
+                  Format FileSystem <b>ATTENTION All persistent Data will be lost ATTENTION</b> <input type='checkbox' name='formatFlashStorage'><br>\
                   This must be done once before the filesystem can be used.<br>\
+                  Will take about 60Seconds<br>\
                   <br>\
                   <input type='submit' value='Submit'></form>\
                   <form method='POST' action='/'><button type='submit'>Cancel</button></form>\                  
@@ -697,8 +733,7 @@ static void handleAdministration(void){
                     </tr>\       
                   </table>\
                 </body>\
-              </html>",lastXXminBatHist,earlyGoHomeCheckBoxValue,earlyGoHomeVolt_,earlyGoHome_mVolt_,allDayMowingCheckBoxValue
-              );
+              </html>";
     wwwserver.send(200, "text/html", temp);
     digitalWrite(LED_BUILTIN, HIGH); //show connection via LED 
 }
@@ -786,11 +821,8 @@ static void computeNewAdminConfig(void){
         Serial.println("[computeNewAdminConfig]Formatting flash storage as selected...");
         writeDebugMessageToInternalLog((String)"[computeNewAdminConfig]Formatting flash storage as selected...");
       }
-
       formatFS();
-    }
-    
-  
+    } 
     digitalWrite(LED_BUILTIN, HIGH); //show connection via LED 
 }
 
@@ -830,6 +862,7 @@ static void handleSwitchOnOff(void){
   wwwserver.send(200, "text/html", temp);
 
   enterPinCode();
+
 }
 /**
  * enterPinCode enters automatically the correct pin as statically given
@@ -937,7 +970,7 @@ static boolean syncTimeViaNTP(void){
   
     // set all bytes in the buffer to 0
     memset(packetBuffer, 0, NTP_PACKET_SIZE);
-    // Initialize values needed to form NTP request
+    // Initialize values needed to form request
     // (see URL above for details on the packets)
     packetBuffer[0] = 0b11100011;   // LI, Version, Mode
     packetBuffer[1] = 0;     // Stratum, or type of clock
@@ -956,7 +989,7 @@ static boolean syncTimeViaNTP(void){
     udp.endPacket();
 
     // wait for a sure reply or otherwise cancel time setting process
-    delay(1400);
+    delay(3000);
     int cb = udp.parsePacket();
     if (!cb){
        if (debugMode){
@@ -1359,27 +1392,28 @@ static void checkBatValues(void){
     writeDebugMessageToInternalLog((String)"[checkBatValues]earlyGoHomeVolt:"+earlyGoHomeVolt+" batteryVoltage"+batteryVoltage + " at local time:"+hour()+":"+minute()+":"+second()+" " + year());
   }
     if (earlyGoHomeVolt>=batteryVoltage){
-      isCharging = false;
-      hasCharged = false;
-      robiAtHomeOrOnTheWayHome = true;
+      robiOnTheWayHome = true;
       return;
     }
     //compare current battery volt value against value 3minutes and then if positive 5 minutes ago to exclude high value during driving downwards or on even ground when before climbing has occured
     //to prevent gcc behavior as described above... sigh
     int batVoltHistCounter_tmp3=batVoltHistCounter-3;
     int batVoltHistCounter_tmp5=batVoltHistCounter-5;
-    if (batVoltHistCounter<=3){
-      batVoltHistCounter_tmp3=maxBatHistValues-4; 
+    
+    if (batVoltHistCounter_tmp3<=-1){
+      batVoltHistCounter_tmp3=maxBatHistValues-batVoltHistCounter-4; //-4=-3-1 since an array with 400 entries goes from 0 to 399... 
     }
  
     if (batteryVoltage>batterVoltageHistory[batVoltHistCounter_tmp3]){
-          if (batVoltHistCounter<=5){
-            batVoltHistCounter_tmp5=maxBatHistValues-6; 
+          if (batVoltHistCounter_tmp5<=-1){
+            batVoltHistCounter_tmp5=maxBatHistValues-batVoltHistCounter-6;//-6=-5-1 since an array with 400 entries goes from 0 to 399... 
           }
       if (batteryVoltage>batterVoltageHistory[batVoltHistCounter_tmp5]){
         isCharging = true;
         hasCharged = true;
-        robiAtHomeOrOnTheWayHome = true;
+        robiAtHome = true;
+        robiOnTheWayHome = false;
+        
         if (debugMode>=1){
           Serial.println((String)"[checkBatValues]Charging startet at local time:"+hour()+":"+(minute()-5)+":"+second()+" " + year());
           writeDebugMessageToInternalLog((String)"[checkBatValues]Charging startet at local time:"+hour()+":"+(minute()-5)+":"+second()+" " + year());
@@ -1389,7 +1423,7 @@ static void checkBatValues(void){
         return;
       }else{
        isCharging = false; //we are consuming energy so we are not charging
-    }
+      }
     }else{
        isCharging = false; //we are consuming energy so we are not charging
     }
@@ -1441,7 +1475,7 @@ static void changeUTCtoLocalTime(void){
 /**
  * writeDebugMessageToInternalLog - stores the last debug messages in an internal storage
  * "§$% shit -> really -> https://stackoverflow.com/questions/11720656/modulo-operation-with-negative-numbers/42131603 gcc has a bad behavio of doing 'negative' modulos... argh -> google shows me differently ... aigh
- */
+ */ 
  static void writeDebugMessageToInternalLog(String tmp){
 
   //to prevent gcc behavior as described above... sigh
@@ -1454,11 +1488,12 @@ static void changeUTCtoLocalTime(void){
   logRotateCounter=(logRotateCounter-1);
  }
 
+
  /**
-  * presentLogEntries - shows the last stored log entries via a website for remote debugging
+  * presentLogEntriesFromInternalLog - shows the last stored log entries via a website for remote debugging from RAM
   */
 
-static void presentLogEntries(void){
+static void presentLogEntriesFromInternalLog(void){
 
   int counter = ((logRotateCounter+1)%maxLogEntries); //to get the latest entry
 
@@ -1490,10 +1525,12 @@ static void presentLogEntries(void){
   wwwserver.send(200, "text/html", tmp);
 
   if (debugMode>=2){
-          Serial.println((String)"[presentLogEntries]presentLogEntries called and executed.");
-          writeDebugMessageToInternalLog((String)"[presentLogEntries]presentLogEntries called and executed.");
+          Serial.println((String)"[presentLogEntriesFromInternalLog]presentLogEntries called and executed.");
+          writeDebugMessageToInternalLog((String)"[presentLogEntriesFromInternalLog]presentLogEntries called and executed.");
   }
 }
+
+
 
 /**
  * reportRainToLandXCape - since the rain sensor is no longer directly connected we use a relay to shortcut the sensor cables to allow the LandXCape mainboard to detect the rain or at least it things it rains 
@@ -1511,7 +1548,7 @@ static void reportRainToLandXCape (void){
 }
 
 /**
- * getRainSensorStatus returns true if at least 7 of 10 values indicate rain 
+ * getRainSensorStatus returns true if at least 3 of 5 values indicate rain 
  * ofterwise false
  */
 
@@ -1524,11 +1561,11 @@ static boolean getRainSensorStatus(void){
 
   int amountOfPositiveRainValues = 0;
 
-  for(int i=0;i<10;i++){
+  for(int i=0;i<5;i++){
     amountOfPositiveRainValues= amountOfPositiveRainValues + rainSensorResults[i];
   }
 
-  if (amountOfPositiveRainValues<=3){
+  if (amountOfPositiveRainValues<=2){
     if (debugMode>=2){
             Serial.println((String)"[getRainSensorStatus]Result: It Rains - "+amountOfPositiveRainValues);
             writeDebugMessageToInternalLog((String)"[getRainSensorStatus]Result: It Rains - "+amountOfPositiveRainValues);
@@ -1551,4 +1588,12 @@ static boolean getRainSensorStatus(void){
  static boolean formatFS (void){
 
   return SPIFFS.format();
+
+  //Restart the WEMOS-FileSystem to ensure a clean start of the file system - a direct restart of the Wemos at this point should work as well
+  SPIFFS.end();
+  //initialize filesystem
+  fs::SPIFFSConfig filesystem_cfg; // to overcome the current SPIFFS "bug" in 2.5.2
+  filesystem_cfg.setAutoFormat(false);
+  SPIFFS.setConfig(filesystem_cfg);
+  SPIFFS.begin(); //Restart the WEMOS to ensure a clean start of the file system - a direct restart at this point should work as well
  }
