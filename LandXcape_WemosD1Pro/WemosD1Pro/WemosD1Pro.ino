@@ -20,9 +20,7 @@ const int robiPinCode = 1881;
 int baudrate = 115200;
 int debugMode = 1; //0 = off, 1 = moderate debug messages, 2 = all debug messages
 boolean NTPUpdateSuccessful = false;
-double version = 0.6441; //changes: Thanks to HaraldB the following BugFix'es have been found and solved: BugFix: The HTML code contained sometimes <\p> instead of </p> -> changed
-//BugFix: Spaces after "\" at the end of HTML code has been removed next to unneccessary "\" - copy and paste mistakes ;)  , BugFix numerious char conversions, BugFix NTP server exchanged against the pool address "pool.ntp.org". Since that change a reduction of the delay from 3sec to 1sec became possible. 
-//Thank you HaraldB :)
+double version = 0.6450; //changes: 
 
 int lastReadingSec=0;
 int lastReadingMin=0;
@@ -302,6 +300,20 @@ void loop() {
             }
           }
         }  
+        //check if it is time to bring robi home if allDayMowing is active only!
+        int currentTimeInMin = hour()*60+minute();
+        
+        if (allDayMowing==true && robiAtHome==false && robiOnTheWayHome == false && currentTimeInMin > sunset && currentTimeInMin < sunrise){
+          
+          handleStopMowing();
+          handleGoHome();
+
+          if (debugMode>=1){
+                    Serial.println((String)"[loop]Sunset detected and allDayMowing active... Sending Robi home to base...");
+                    writeDebugMessageToInternalLog((String)"[loop]Sunset detected and allDayMowing active... Sending Robi home to base...");
+            }
+        }
+        
         //check for rain
         if (getRainSensorStatus() && robiOnTheWayHome == false && robiAtHome == false && raining == false){ //if true then rain has been detected -> send robi home
             if (debugMode>=1){
@@ -1535,7 +1547,7 @@ static void presentLogEntriesFromInternalLog(void){
 
 /**
  * reportRainToLandXCape - since the rain sensor is no longer directly connected we use a relay to shortcut the sensor cables to allow the LandXCape mainboard to detect the rain or at least it things it rains 
- * Currently not used, but will be used as an Option within the Admin options
+ * Currently not used, but will be used as an Option within the Admin optionsThanks
  */
 
 static void reportRainToLandXCape (void){
