@@ -20,8 +20,9 @@ const int robiPinCode = 1881;
 int baudrate = 115200;
 int debugMode = 1; //0 = off, 1 = moderate debug messages, 2 = all debug messages
 boolean NTPUpdateSuccessful = false;
-double version = 0.6440; //changes: LBugfix: After formatting the filesystem, the filesystem is restartet propably to ensure it working without reboot of the WEMOS board,BugFix Uptime hours,
-//NTP Time response delay expanded to 3 seconds - with 2 seconds some misses happend from time to time, 
+double version = 0.6441; //changes: Thanks to HaraldB the following BugFix'es have been found and solved: BugFix: The HTML code contained sometimes <\p> instead of </p> -> changed
+//BugFix: Spaces after "\" at the end of HTML code has been removed next to unneccessary "\" - copy and paste mistakes ;)  , BugFix numerious char conversions, BugFix NTP server exchanged against the pool address "pool.ntp.org". Since that change a reduction of the delay from 3sec to 1sec became possible. 
+//Thank you HaraldB :)
 
 int lastReadingSec=0;
 int lastReadingMin=0;
@@ -82,8 +83,8 @@ int REGENSENSOR_WEMOS = D4;
 
 ESP8266WebServer wwwserver(80);
 String content = "";
-char* true_ = "true";
-char* false_ = "false";
+char true_[] = "true";
+char false_[] = "false";
 
 //Debug messages
 String connectTo = "Connection to ";
@@ -396,9 +397,9 @@ static void handleRoot(void){
                 <br>\
                 <form method='POST' action='/goHome'><button type='submit'>go Home</button></form>\
                 <br>\
-                <form method='POST' action='/stats'><button type='submit'>Statistics</button></form>\ 
+                <form method='POST' action='/stats'><button type='submit'>Statistics</button></form>\
                 <br>\
-                <form method='POST' action='/configure'><button type='submit'>Administration</button></form>\ 
+                <form method='POST' action='/configure'><button type='submit'>Administration</button></form>\
                 <br>\
                 <form method='POST' action='/PWRButton'><button type='submit'>Power Robi off / on</button></form>\
                 <br>\
@@ -447,7 +448,7 @@ static void handleStartMowing(void){
             </head>\
               <body>\
                 <h1>LandXcape</h1>\
-                <p><\p>\
+                <p></p>\
                 <p>Mowing started at local time: %02d:%02d:%02d</p>\
               </body>\
             </html>",
@@ -492,7 +493,7 @@ static void handleStopMowing(void){
             </head>\
               <body>\
                 <h1>LandXcape</h1>\
-                <p><\p>\
+                <p></p>\
                 <p>Mowing stoped at local time: %02d:%02d:%02d</p>\
               </body>\
             </html>",
@@ -535,7 +536,7 @@ static void handleGoHome(void){
             </head>\
               <body>\
                 <h1>LandXcape</h1>\
-                <p><\p>\
+                <p></p>\
                 <p>Mowing stoped and sent back to base at local time: %02d:%02d:%02d</p>\
               </body>\
             </html>",
@@ -604,9 +605,9 @@ static void showStatistics(void){
       robiOnTheWayHomeValue = false_;
     }
 
-    char * rainStatus_ = "Not raining";
+    char rainStatus_ [] = "Not raining";
     if(getRainSensorStatus()){
-      rainStatus_ = "raining";
+      strncpy(rainStatus_, "raining ...", sizeof(rainStatus_));
     }
         
     char temp[2000];
@@ -680,16 +681,16 @@ static void handleAdministration(void){
     }
     //preparations
     //char temp[2500];
-    char* earlyGoHomeCheckBoxValue = "unchecked";
+    char earlyGoHomeCheckBoxValue [] = "unchecked";
     if (earlyGoHome==true){
-      earlyGoHomeCheckBoxValue = "checked";
+      strncpy(earlyGoHomeCheckBoxValue, "checked  ", sizeof(earlyGoHomeCheckBoxValue));
     }
     int earlyGoHomeVolt_ = earlyGoHomeVolt;
     int earlyGoHome_mVolt_ = (double(earlyGoHomeVolt-earlyGoHomeVolt_)*1000); // subtract the voltage and multiply by 1000 to get the milivolts
 
-    char* allDayMowingCheckBoxValue = "unchecked";
+    char allDayMowingCheckBoxValue [] = "unchecked";
     if (allDayMowing==true){
-      allDayMowingCheckBoxValue = "checked";
+      strncpy(allDayMowingCheckBoxValue, "checked  ",sizeof(allDayMowingCheckBoxValue));
     }    
 
     //create website
@@ -702,16 +703,16 @@ static void handleAdministration(void){
               </head>\
                 <body>\
                   <h1>LandXcape Administration Site</h1>\
-                  <p><\p>\
+                  <p></p>\
                   <form method='POST' action='/newAdminConfiguration'>\
                   Battery history: Show <input type='number' name='batHistMinShown' value='";
                   
-            temp = temp + lastXXminBatHist +"'  min=60 max=400> minutes<br>\     
+            temp = temp + lastXXminBatHist +"'  min=60 max=400> minutes<br>\
                   Activate function \"Go Home Early\" <input type='checkbox' name='goHomeEarly' "; 
             temp = temp + earlyGoHomeCheckBoxValue +"><br>\
                   If activated, send LandXcape home at: <input type='number' name='batVol' value='" + earlyGoHomeVolt_ +"' min=16 max=20> V <input type='number' name='batMiliVolt' value='";
-            temp = temp + earlyGoHome_mVolt_ +"' min=000 max=999>mV<br>\ 
-                  If not activated, this value is used to define the battery voltage <br> where no new round of mowing should be started before charging again.<br>\ 
+            temp = temp + earlyGoHome_mVolt_ +"' min=000 max=999>mV<br>\
+                  If not activated, this value is used to define the battery voltage <br> where no new round of mowing should be started before charging again.<br>\
                   <br>\
                   Activate function \"Mowing from sunrise to sunset\" <input type='checkbox' name='allDayMowing_' ";
             temp = temp + allDayMowingCheckBoxValue+"><br>\
@@ -722,15 +723,15 @@ static void handleAdministration(void){
                   Will take about 60Seconds<br>\
                   <br>\
                   <input type='submit' value='Submit'></form>\
-                  <form method='POST' action='/'><button type='submit'>Cancel</button></form>\                  
-                  <p><\p>\
+                  <form method='POST' action='/'><button type='submit'>Cancel</button></form>\
+                  <p></p>\
                   <br>\
                   <table style='width:450px'>\
                     <tr>\
                       <th><form method='POST' action='/updateLandXcape'><button type='submit'>SW Update via WLAN</button></form></th>\
-                      <th><form method='POST' action='/resetWemos'><button type='submit'>Reset WEMOS board</button></form>\ </th>\
-                      <th><form method='POST' action='/logFiles'><button type='submit'>Show Log-Entries</button></form>\ </th>\
-                    </tr>\       
+                      <th><form method='POST' action='/resetWemos'><button type='submit'>Reset WEMOS board</button></form></th>\
+                      <th><form method='POST' action='/logFiles'><button type='submit'>Show Log-Entries</button></form></th>\
+                    </tr>\
                   </table>\
                 </body>\
               </html>";
@@ -778,7 +779,7 @@ static void computeNewAdminConfig(void){
               </head>\
                 <body>\
                   <h1>LandXcape - administration changes submited at local time: %02d:%02d:%02d</h1>\
-                  <p><\p>\
+                  <p></p>\
                   <p>LastXXminBatHist Variable changed to: %02d</p>\
                   <p>GoHomeEarly Function: %d</p>\
                   <p>GoHomeEarly Voltage:: %2.3f</p>\
@@ -853,7 +854,7 @@ static void handleSwitchOnOff(void){
             </head>\
               <body>\
                 <h1>LandXcape</h1>\
-                <p><\p>\
+                <p></p>\
                 <p>Robi switched off/on at local time: %02d:%02d:%02d</p>\
               </body>\
             </html>",
@@ -950,7 +951,7 @@ static boolean syncTimeViaNTP(void){
   WiFiUDP udp;
   int localPort = 2390;      // local port to listen for UDP packets
   IPAddress timeServerIP; // time.nist.gov NTP server address
-  char* ntpServerName = "time.nist.gov";
+  char ntpServerName [] = "pool.ntp.org";
   int NTP_PACKET_SIZE = 48; // NTP time stamp is in the first 48 bytes of the message
   byte packetBuffer[ NTP_PACKET_SIZE]; //buffer to hold incoming and outgoing packets
 
@@ -989,7 +990,7 @@ static boolean syncTimeViaNTP(void){
     udp.endPacket();
 
     // wait for a sure reply or otherwise cancel time setting process
-    delay(3000);
+    delay(1000);
     int cb = udp.parsePacket();
     if (!cb){
        if (debugMode){
@@ -1139,7 +1140,7 @@ static void handleWebUpdateHelperFunction (void){
                 </head>\
                   <body>\
                     <h1>LandXcape</h1>\
-                    <p><\p>\
+                    <p></p>\
                     <p>Update successfull at Local time: %02d:%02d:%02d</p>\
                   </body>\
                 </html>",
@@ -1292,7 +1293,7 @@ void resetWemosBoard(void){
             </head>\
               <body>\
                 <h1>LandXcape</h1>\
-                <p><\p>\
+                <p></p>\
                 <p>Software reset triggered. Reseting... at Time: %02d:%02d:%02d</p>\
               </body>\
             </html>",
@@ -1355,7 +1356,7 @@ boolean summertime_EU(int year, byte month, byte day, byte hour, byte tzHours)
 {
  if (month<3 || month>10) return false; // keine Sommerzeit in Jan, Feb, Nov, Dez
  if (month>3 && month<10) return true; // Sommerzeit in Apr, Mai, Jun, Jul, Aug, Sep
- if (month==3 && (hour + 24 * day)>=(1 + tzHours + 24*(31 - (5 * year /4 + 4) % 7)) || month==10 && (hour + 24 * day)<(1 + tzHours + 24*(31 - (5 * year /4 + 1) % 7)))
+ if ((month==3 && (hour + 24 * day)>=(1 + tzHours + 24*(31 - (5 * year /4 + 4) % 7))) || (month==10 && (hour + 24 * day)<(1 + tzHours + 24*(31 - (5 * year /4 + 1) % 7))))
    return true;
  else
    return false;
@@ -1506,12 +1507,12 @@ static void presentLogEntriesFromInternalLog(void){
                 </head>\
                   <body>\
                     <h1>LandXcape - WEMOS - Debug Entries</h1>\
-                    <p><\p>\
+                    <p></p>\
                     <table style='width:450px'>\
                       <tr>\
-                        <th><form method='POST' action='/logFiles'><button type='submit'>Reload</button></form>\ </th>\
-                        <th><form method='POST' action='/configure'><button type='submit'>Exit</button></form>\ </th>\
-                      </tr>\       
+                        <th><form method='POST' action='/logFiles'><button type='submit'>Reload</button></form></th>\
+                        <th><form method='POST' action='/configure'><button type='submit'>Exit</button></form></th>\
+                      </tr>\
                     </table>\
                    <br>";
                    
@@ -1534,6 +1535,7 @@ static void presentLogEntriesFromInternalLog(void){
 
 /**
  * reportRainToLandXCape - since the rain sensor is no longer directly connected we use a relay to shortcut the sensor cables to allow the LandXCape mainboard to detect the rain or at least it things it rains 
+ * Currently not used, but will be used as an Option within the Admin options
  */
 
 static void reportRainToLandXCape (void){
