@@ -20,7 +20,8 @@ const int robiPinCode = 1881;
 int baudrate = 115200;
 int debugMode = 1; //0 = off, 1 = moderate debug messages, 2 = all debug messages
 boolean NTPUpdateSuccessful = false;
-double version = 0.6450; //changes: 
+double version = 0.6453; //changes: BugFix Website creation only called if externaly. If internally called, website creation is bypassed and not executed anymore
+// Memory optimizations: String usage minimized (except Debug Entries presentation) Adaption: HasCharged/isCharging more robust now
 
 int lastReadingSec=0;
 int lastReadingMin=0;
@@ -67,8 +68,9 @@ double earlyGoHomeVolt = 17.0;
 int dailyTasks = -1;
 boolean allDayMowing = false; //lawn mowing from sunrise to sunset
 const int maxLogEntries = 60;
-String logRotateBuffer [maxLogEntries];
-int logRotateCounter = 0; //for RAM storage - deprecated
+const int maxLogLength = 140;
+char logRotateBuffer [maxLogEntries][maxLogLength]; // 150*60*1byte je character = ~8.4kb (max) size
+int logRotateCounter = 0; 
 
 int STOP = D1;
 int START = D3;
@@ -80,14 +82,15 @@ int REGENSENSOR_LXC = D2;
 int REGENSENSOR_WEMOS = D4;
 
 ESP8266WebServer wwwserver(80);
-String content = "";
+
 char true_[] = "true";
 char false_[] = "false";
+boolean showWebsite = true;
 
 //Debug messages
-String connectTo = "Connection to ";
-String connectionEstablished = "WiFi connected: ";
-String ipAddr = "IP Address: ";
+char connectTo []= "Connection to ";
+char connectionEstablished [] = "WiFi connected: ";
+char ipAddr [] = "IP Address: ";
 
 //SunriseSunset variables -> https://www.zamg.ac.at/cms/de/klima/klimauebersichten/ephemeriden/graz/?jahr=2019
 //or have a look here for the algorithm -> https://www.instructables.com/id/Calculating-Sunset-and-Sunrise-for-a-Microcontroll/
@@ -117,11 +120,6 @@ void setup() {
   SPIFFS.setConfig(filesystem_cfg);
   SPIFFS.begin();
 
-  //initialize logRotateBuffer at first
-  for (int i=0; i<maxLogEntries;i++){
-    logRotateBuffer[i] = " ";
-  }
-
   //initialize rainSensorResults buffer
   for(int i=0; i<10;i++){
     rainSensorResults[i]=true;
@@ -137,8 +135,8 @@ void setup() {
 
   //WiFi Connection
   if (debugMode>=1){
-    Serial.println("[setup]"+connectTo + ssid);
-    writeDebugMessageToInternalLog("[setup]"+connectTo + ssid);
+    Serial.println((String)"[setup]"+connectTo + ssid);
+    writeDebugMessageToInternalLog((String)"[setup]"+connectTo + ssid);
   }
 
   WiFi.mode(WIFI_STA);
@@ -290,7 +288,9 @@ void loop() {
                     Serial.println((String)"[loop]Mowing from Sunrise to Sunset - start next round at local time:"+hour()+":"+minute()+":"+second());
                     writeDebugMessageToInternalLog((String)"[loop]Mowing from Sunrise to Sunset - start next round at local time:"+hour()+":"+minute()+":"+second());
                   } 
+                  showWebsite=false;
                   handleStartMowing(); //start mowing; boolean variables will be set within this function
+                  showWebsite=true;
               }
        
           }else{
@@ -305,8 +305,10 @@ void loop() {
         
         if (allDayMowing==true && robiAtHome==false && robiOnTheWayHome == false && currentTimeInMin > sunset && currentTimeInMin < sunrise){
           
+          showWebsite=false;
           handleStopMowing();
           handleGoHome();
+          showWebsite=true;
 
           if (debugMode>=1){
                     Serial.println((String)"[loop]Sunset detected and allDayMowing active... Sending Robi home to base...");
@@ -320,8 +322,11 @@ void loop() {
                     Serial.println((String)"[loop]Rain has been detected. Sending Robi home to base...");
                     writeDebugMessageToInternalLog((String)"[loop]Rain has been detected. Sending Robi home to base...");
             }
+             showWebsite=false;
              handleStopMowing(); //stop mowing to allow to send robi home
              handleGoHome(); //send Robi home
+             showWebsite=true;
+             
              raining = true;
              rainingDelay_ = rainingDelay;
         }else{
@@ -353,8 +358,10 @@ void loop() {
                 Serial.println((String)"[loop]With sensored Battery Value:"+batteryVoltage+" and limit set:"+earlyGoHomeVolt);
                 writeDebugMessageToInternalLog((String)"[loop]With sensored Battery Value:"+batteryVoltage+" and limit set:"+earlyGoHomeVolt);
              } 
+             showWebsite=false;
              handleStopMowing(); //stop mowing to allow to send robi home
              handleGoHome(); //send Robi home
+             showWebsite=true;
         }
        }
      lastReadingSec = second();
@@ -428,6 +435,7 @@ static void handleRoot(void){
 
 /*
  * handleStartMowing triggers the Robi to start with his job :)
+ * showWebsite true means presenting the website otherwise only an internal call without presenting the website
  */
 static void handleStartMowing(void){
 
@@ -448,25 +456,27 @@ static void handleStartMowing(void){
     Serial.println((String)"[handleStartMowing]Mowing started at local time:"+hour()+":"+minute()+":"+second()+" " + year());
     writeDebugMessageToInternalLog((String)"[handleStartMowing]Mowing started at local time:"+hour()+":"+minute()+":"+second()+" " + year());
   }
-  char temp[700];
-  snprintf(temp, 700,
-           "<html>\
-            <head>\
-              <title>LandXcape</title>\
-              <style>\
-                body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
-              </style>\
-              <meta http-equiv='Refresh' content='2; url=\\'>\
-            </head>\
-              <body>\
-                <h1>LandXcape</h1>\
-                <p></p>\
-                <p>Mowing started at local time: %02d:%02d:%02d</p>\
-              </body>\
-            </html>",
-            hour(),minute(),second()
-            );
-  wwwserver.send(200, "text/html", temp);
+  if (showWebsite){
+    char temp[700];
+    snprintf(temp, 700,
+             "<html>\
+              <head>\
+                <title>LandXcape</title>\
+                <style>\
+                  body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
+                </style>\
+                <meta http-equiv='Refresh' content='2; url=\\'>\
+              </head>\
+                <body>\
+                  <h1>LandXcape</h1>\
+                  <p></p>\
+                  <p>Mowing started at local time: %02d:%02d:%02d</p>\
+                </body>\
+              </html>",
+              hour(),minute(),second()
+              );
+    wwwserver.send(200, "text/html", temp);
+  }
 
   robiAtHome = false; //Robi has just started so it can not be at home or on the way too ;)
   robiOnTheWayHome = false; // see above
@@ -476,8 +486,9 @@ static void handleStartMowing(void){
 
 /*
  * handleStopMowing triggers the Robi to stop with his job and to wait for further instructions :)
+ * showWebsite true means presenting the website otherwise only an internal call without presenting the website
  */
-static void handleStopMowing(void){
+static void handleStopMowing(){
   
    if (debugMode>=1){
     Serial.println((String)"[handleStopMowing]Start with the Stop relay for " + buttonPressTime + " before releasing it again");
@@ -493,31 +504,34 @@ static void handleStopMowing(void){
     Serial.println((String)"[handleStopMowing]Mowing stoped at local time:"+hour()+":"+minute()+":"+second()+" " + year());
     writeDebugMessageToInternalLog((String)"[handleStopMowing]Mowing stoped at local time:"+hour()+":"+minute()+":"+second()+" " + year());
   }
-  char temp[700];
-  snprintf(temp, 700,
-           "<html>\
-            <head>\
-              <title>LandXcape</title>\
-              <style>\
-                body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
-              </style>\
-              <meta http-equiv='Refresh' content='2; url=\\'>\
-            </head>\
-              <body>\
-                <h1>LandXcape</h1>\
-                <p></p>\
-                <p>Mowing stoped at local time: %02d:%02d:%02d</p>\
-              </body>\
-            </html>",
-            hour(),minute(),second()
-            );
-  wwwserver.send(200, "text/html", temp);
+  if(showWebsite){
+    char temp[700];
+    snprintf(temp, 700,
+             "<html>\
+              <head>\
+                <title>LandXcape</title>\
+                <style>\
+                  body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
+                </style>\
+                <meta http-equiv='Refresh' content='2; url=\\'>\
+              </head>\
+                <body>\
+                  <h1>LandXcape</h1>\
+                  <p></p>\
+                  <p>Mowing stoped at local time: %02d:%02d:%02d</p>\
+                </body>\
+              </html>",
+              hour(),minute(),second()
+              );
+    wwwserver.send(200, "text/html", temp);
+  }
 }
 
 /*
  * handleGoHome triggers the Robi to go back to his station and to charge :)
+ * showWebsite true means presenting the website otherwise only an internal call without presenting the website
  */
-static void handleGoHome(void){
+static void handleGoHome(){
   
   if (debugMode>=1){
     Serial.println((String)"[handleGoHome]Start with the Home relay for " + buttonPressTime + "followed with the OK button for the same time");
@@ -536,25 +550,27 @@ static void handleGoHome(void){
     Serial.println((String)"[handleGoHome]Robi sent home at local time:"+hour()+":"+minute()+":"+second()+" " + year());
     writeDebugMessageToInternalLog((String)"[handleGoHome]Robi sent home at local time:"+hour()+":"+minute()+":"+second()+" " + year());
   }
+  if (showWebsite){
   char temp[700];
-  snprintf(temp, 700,
-           "<html>\
-            <head>\
-              <title>LandXcape</title>\
-              <style>\
-                body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
-              </style>\
-              <meta http-equiv='Refresh' content='2; url=\\'>\
-            </head>\
-              <body>\
-                <h1>LandXcape</h1>\
-                <p></p>\
-                <p>Mowing stoped and sent back to base at local time: %02d:%02d:%02d</p>\
-              </body>\
-            </html>",
-            hour(),minute(),second()
-            );
-  wwwserver.send(200, "text/html", temp);
+    snprintf(temp, 700,
+             "<html>\
+              <head>\
+                <title>LandXcape</title>\
+                <style>\
+                  body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
+                </style>\
+                <meta http-equiv='Refresh' content='2; url=\\'>\
+              </head>\
+                <body>\
+                  <h1>LandXcape</h1>\
+                  <p></p>\
+                  <p>Mowing stoped and sent back to base at local time: %02d:%02d:%02d</p>\
+                </body>\
+              </html>",
+              hour(),minute(),second()
+              );
+    wwwserver.send(200, "text/html", temp);
+  }
 
   robiAtHome = false; //Robi has just sent home so it should not be at home currently or follow the line to mow it
   robiOnTheWayHome = true; // since robi is on the way home
@@ -705,10 +721,10 @@ static void handleAdministration(void){
       strncpy(allDayMowingCheckBoxValue, "checked  ",sizeof(allDayMowingCheckBoxValue));
     }    
 
-    //create website
-    String temp = "<html>\
-              <head>\
-                <title>LandXcape</title>\
+    char temp[2300];
+    snprintf(temp, 2300,
+               "<html>\
+               <title>LandXcape</title>\
                 <style>\
                   body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088;}\
                 </style>\
@@ -717,17 +733,12 @@ static void handleAdministration(void){
                   <h1>LandXcape Administration Site</h1>\
                   <p></p>\
                   <form method='POST' action='/newAdminConfiguration'>\
-                  Battery history: Show <input type='number' name='batHistMinShown' value='";
-                  
-            temp = temp + lastXXminBatHist +"'  min=60 max=400> minutes<br>\
-                  Activate function \"Go Home Early\" <input type='checkbox' name='goHomeEarly' "; 
-            temp = temp + earlyGoHomeCheckBoxValue +"><br>\
-                  If activated, send LandXcape home at: <input type='number' name='batVol' value='" + earlyGoHomeVolt_ +"' min=16 max=20> V <input type='number' name='batMiliVolt' value='";
-            temp = temp + earlyGoHome_mVolt_ +"' min=000 max=999>mV<br>\
+                  Battery history: Show <input type='number' name='batHistMinShown' value='%02d'  min=60 max=400> minutes<br>\
+                  Activate function \"Go Home Early\" <input type='checkbox' name='goHomeEarly' %02s ><br>\
+                  If activated, send LandXcape home at: <input type='number' name='batVol' value='%02d' min=16 max=20> V <input type='number' name='batMiliVolt' value='%03d' min=000 max=999>mV<br>\
                   If not activated, this value is used to define the battery voltage <br> where no new round of mowing should be started before charging again.<br>\
                   <br>\
-                  Activate function \"Mowing from sunrise to sunset\" <input type='checkbox' name='allDayMowing_' ";
-            temp = temp + allDayMowingCheckBoxValue+"><br>\
+                  Activate function \"Mowing from sunrise to sunset\" <input type='checkbox' name='allDayMowing_' %02s ><br>\
                   <br>\
                   FileSystem Functions: <br>\
                   Format FileSystem <b>ATTENTION All persistent Data will be lost ATTENTION</b> <input type='checkbox' name='formatFlashStorage'><br>\
@@ -746,7 +757,9 @@ static void handleAdministration(void){
                     </tr>\
                   </table>\
                 </body>\
-              </html>";
+              </html>",lastXXminBatHist,earlyGoHomeCheckBoxValue,earlyGoHomeVolt_,earlyGoHome_mVolt_,allDayMowingCheckBoxValue
+                );  
+                
     wwwserver.send(200, "text/html", temp);
     digitalWrite(LED_BUILTIN, HIGH); //show connection via LED 
 }
@@ -806,9 +819,9 @@ static void computeNewAdminConfig(void){
     if (debugMode>=1){
       Serial.println((String)"[computeNewAdminConfig]New Admin config transmitted at local time:"+hour()+":"+minute()+":"+second()+" " + year());
       writeDebugMessageToInternalLog((String)"[computeNewAdminConfig]New Admin config transmitted at local time:"+hour()+":"+minute()+":"+second()+" " + year());
-      Serial.println("With the following values:");
+      Serial.println("[computeNewAdminConfig]With the following values:");
       writeDebugMessageToInternalLog((String)"[computeNewAdminConfig]With the following values:");
-      Serial.println("");
+      Serial.println("[computeNewAdminConfig]");
       writeDebugMessageToInternalLog((String)"[computeNewAdminConfig]");
       Serial.println((String)"[computeNewAdminConfig]Battery History Showtime"+lastXXminBatHist);
       writeDebugMessageToInternalLog((String)"[computeNewAdminConfig]Battery History Showtime"+lastXXminBatHist);
@@ -1230,17 +1243,16 @@ void computeGraphBasedOnBatValues(void) {
       }
       return;   
   }
-  
-  String svgBatHistGraph = ""; 
+
   char temp[100];
-  
-  svgBatHistGraph += "<svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.1\" width=\"400\" height=\"155\">\n";
-  svgBatHistGraph += "<rect width=\"400\" height=\"155\" fill=\"rgb(250, 230, 210)\" stroke-width=\"1\" stroke=\"rgb(0, 0, 0)\" />\n";
-  svgBatHistGraph += "<g stroke=\"black\">\n";
+  char svgBatHistGraph[230];
+  snprintf(svgBatHistGraph, 230,
+    "<svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.1\" width=\"400\" height=\"155\">\
+    <rect width=\"400\" height=\"155\" fill=\"rgb(250, 230, 210)\" stroke-width=\"1\" stroke=\"rgb(0, 0, 0)\" />\
+    <g stroke=\"black\">");
 
   //write initial part of the SVG
   batGraphFile.println(svgBatHistGraph);
-  svgBatHistGraph= ""; //destroy string to save memory
 
   int counter = batVoltHistCounter%maxBatHistValues;
   
@@ -1264,7 +1276,7 @@ void computeGraphBasedOnBatValues(void) {
   }
 
   for (double x = 0; x < (double)maxBatHistValues; x=x+dotWidth) { 
- // Serial.println((String)"x:"+x+" maxBatHistValues="+maxBatHistValues+"dotWidth: "+dotWidth );
+    
     int y2 = (batterVoltageHistory[counter%maxBatHistValues]-lowestBatVoltage)*amplifier;
     
     sprintf(temp, "<line x1=\"%d\" y1=\"%d\" x2=\"%d\" y2=\"%d\" stroke-width=\"1\" />\n", (int)x, 150-y, (int)(x + dotWidth), 150-y2);
@@ -1278,7 +1290,7 @@ void computeGraphBasedOnBatValues(void) {
   batGraphFile.close();
   if (debugMode>=2){
           Serial.println("[computeGraphBasedOnBatValues]computeGraphBasedOnBatValues has been finished and as file saved...");
-          writeDebugMessageToInternalLog((String)"[computeGraphBasedOnBatValues]computeGraphBasedOnBatValues has been finished and as file saved...");
+          writeDebugMessageToInternalLog("[computeGraphBasedOnBatValues]computeGraphBasedOnBatValues has been finished and as file saved...");
   }
 }
 
@@ -1290,7 +1302,7 @@ void computeGraphBasedOnBatValues(void) {
 void resetWemosBoard(void){
   if (debugMode>=1){
           Serial.println("[resetWemosBoard]Software reset triggered. Reseting...");
-          writeDebugMessageToInternalLog((String)"[resetWemosBoard]Software reset triggered. Reseting...");
+          writeDebugMessageToInternalLog("[resetWemosBoard]Software reset triggered. Reseting...");
   }
 
   char temp[700];
@@ -1327,7 +1339,7 @@ static void computeSunriseSunsetInformation(void){
 
   if (debugMode>=1){
     Serial.println("[computeSunriseSunsetInformation]computeSunriseSunsetInformation function triggered...");
-    writeDebugMessageToInternalLog((String)"[computeSunriseSunsetInformation]computeSunriseSunsetInformation function triggered...");
+    writeDebugMessageToInternalLog("[computeSunriseSunsetInformation]computeSunriseSunsetInformation function triggered...");
   }
 
   SummerTimeActive = summertime_EU(year(),month(),day(),hour(),1);
@@ -1382,7 +1394,7 @@ boolean summertime_EU(int year, byte month, byte day, byte hour, byte tzHours)
     Serial.println((String)"[doItOnceADay]Summertime:"+SummerTimeActive);
     writeDebugMessageToInternalLog((String)"[doItOnceADay]Summertime:"+SummerTimeActive);
     Serial.println("[doItOnceADay]doItOnceADay has been triggered. Doing the daily work...");
-    writeDebugMessageToInternalLog((String)"[doItOnceADay]doItOnceADay has been triggered. Doing the daily work...");
+    writeDebugMessageToInternalLog("[doItOnceADay]doItOnceADay has been triggered. Doing the daily work...");
   }
   NTPUpdateSuccessful = syncTimeViaNTP(); //resync time from the NTP just to ensure correctness
   computeSunriseSunsetInformation(); //compute the new sunrise and sunset for today
@@ -1400,7 +1412,7 @@ static void checkBatValues(void){
 
   if (debugMode>=2){
     Serial.println("[checkBatValues]check Bat Values triggered");
-    writeDebugMessageToInternalLog((String)"[checkBatValues]check Bat Values triggered");
+    writeDebugMessageToInternalLog("[checkBatValues]check Bat Values triggered");
     Serial.println((String)"[checkBatValues]earlyGoHomeVolt:"+earlyGoHomeVolt+" batteryVoltage"+batteryVoltage + " at Local time:"+hour()+":"+minute()+":"+second()+" " + year());
     writeDebugMessageToInternalLog((String)"[checkBatValues]earlyGoHomeVolt:"+earlyGoHomeVolt+" batteryVoltage"+batteryVoltage + " at local time:"+hour()+":"+minute()+":"+second()+" " + year());
   }
@@ -1421,7 +1433,7 @@ static void checkBatValues(void){
           if (batVoltHistCounter_tmp5<=-1){
             batVoltHistCounter_tmp5=maxBatHistValues-batVoltHistCounter-6;//-6=-5-1 since an array with 400 entries goes from 0 to 399... 
           }
-      if (batteryVoltage>batterVoltageHistory[batVoltHistCounter_tmp5]){
+      if (batterVoltageHistory[batVoltHistCounter_tmp3]>batterVoltageHistory[batVoltHistCounter_tmp5]){
         isCharging = true;
         hasCharged = true;
         robiAtHome = true;
@@ -1487,25 +1499,24 @@ static void changeUTCtoLocalTime(void){
 
 /**
  * writeDebugMessageToInternalLog - stores the last debug messages in an internal storage
- * "§$% shit -> really -> https://stackoverflow.com/questions/11720656/modulo-operation-with-negative-numbers/42131603 gcc has a bad behavio of doing 'negative' modulos... argh -> google shows me differently ... aigh
  */ 
  static void writeDebugMessageToInternalLog(String tmp){
 
-  //to prevent gcc behavior as described above... sigh
   if (logRotateCounter<=0){
     logRotateCounter=maxLogEntries-1; // 0 to 399 = 400 entries for example
   }
-  
-  logRotateBuffer[logRotateCounter] = tmp;
 
+  char temp[maxLogLength];
+  tmp.toCharArray(temp,maxLogLength);
+  
+  snprintf(logRotateBuffer[logRotateCounter],maxLogLength,temp);
+  
   logRotateCounter=(logRotateCounter-1);
  }
-
 
  /**
   * presentLogEntriesFromInternalLog - shows the last stored log entries via a website for remote debugging from RAM
   */
-
 static void presentLogEntriesFromInternalLog(void){
 
   int counter = ((logRotateCounter+1)%maxLogEntries); //to get the latest entry
@@ -1536,14 +1547,12 @@ static void presentLogEntriesFromInternalLog(void){
       tmp = tmp + "</body>\
                 </html>";
   wwwserver.send(200, "text/html", tmp);
-
+  
   if (debugMode>=2){
           Serial.println((String)"[presentLogEntriesFromInternalLog]presentLogEntries called and executed.");
           writeDebugMessageToInternalLog((String)"[presentLogEntriesFromInternalLog]presentLogEntries called and executed.");
   }
 }
-
-
 
 /**
  * reportRainToLandXCape - since the rain sensor is no longer directly connected we use a relay to shortcut the sensor cables to allow the LandXCape mainboard to detect the rain or at least it things it rains 
