@@ -20,8 +20,7 @@ const int robiPinCode = 1881;
 int baudrate = 115200;
 int debugMode = 1; //0 = off, 1 = moderate debug messages, 2 = all debug messages
 boolean NTPUpdateSuccessful = false;
-double version = 0.6453; //changes: BugFix Website creation only called if externaly. If internally called, website creation is bypassed and not executed anymore
-// Memory optimizations: String usage minimized (except Debug Entries presentation) Adaption: HasCharged/isCharging more robust now
+double version = 0.6461; //changes: Adaption: checkBatValues stabilizing
 
 int lastReadingSec=0;
 int lastReadingMin=0;
@@ -51,6 +50,7 @@ boolean robiAtHome = false;
 boolean robiOnTheWayHome = false;
 boolean isCharging = false;
 boolean hasCharged = false;
+int hasChargedDelay = 5; //stabilize charging detection
 boolean raining = false;
 const int rainingDelay = 20; //in minutes delay after rain has been detected
 int rainingDelay_ = rainingDelay; //delay counter to subtract from
@@ -1423,34 +1423,50 @@ static void checkBatValues(void){
     //compare current battery volt value against value 3minutes and then if positive 5 minutes ago to exclude high value during driving downwards or on even ground when before climbing has occured
     //to prevent gcc behavior as described above... sigh
     int batVoltHistCounter_tmp3=batVoltHistCounter-3;
-    int batVoltHistCounter_tmp5=batVoltHistCounter-5;
+    int batVoltHistCounter_tmp6=batVoltHistCounter-6;
     
     if (batVoltHistCounter_tmp3<=-1){
       batVoltHistCounter_tmp3=maxBatHistValues-batVoltHistCounter-4; //-4=-3-1 since an array with 400 entries goes from 0 to 399... 
     }
  
     if (batteryVoltage>batterVoltageHistory[batVoltHistCounter_tmp3]){
-          if (batVoltHistCounter_tmp5<=-1){
-            batVoltHistCounter_tmp5=maxBatHistValues-batVoltHistCounter-6;//-6=-5-1 since an array with 400 entries goes from 0 to 399... 
+          if (batVoltHistCounter_tmp6<=-1){
+            batVoltHistCounter_tmp6=maxBatHistValues-batVoltHistCounter-7;//-7=-6-1 since an array with 400 entries goes from 0 to 399... 
           }
-      if (batterVoltageHistory[batVoltHistCounter_tmp3]>batterVoltageHistory[batVoltHistCounter_tmp5]){
+      if (batterVoltageHistory[batVoltHistCounter_tmp3]>batterVoltageHistory[batVoltHistCounter_tmp6]){
+               
+        if (debugMode>=1 && hasCharged == false){ //write default charging information only once
+          Serial.println((String)"[checkBatValues]Charging startet at local time:"+hour()+":"+(minute()-6)+":"+second()+" " + year());
+          writeDebugMessageToInternalLog((String)"[checkBatValues]Charging startet at local time:"+hour()+":"+(minute()-6)+":"+second()+" " + year());
+          Serial.println((String)"[checkBatValues]with values: Battery"+batteryVoltage+" > "+batterVoltageHistory[batVoltHistCounter_tmp3] + " Battery Voltage History 3min ago > " +batterVoltageHistory[batVoltHistCounter_tmp6] + "Battery Voltage History 5min ago");
+          writeDebugMessageToInternalLog((String)"[checkBatValues]with values: Battery"+batteryVoltage+" > "+batterVoltageHistory[batVoltHistCounter_tmp3] + " Battery Voltage History 3min ago > " +batterVoltageHistory[batVoltHistCounter_tmp6] + "Battery Voltage History 5min ago");
+        }else{
+          if (debugMode>=2){ //write default charging information only once
+          Serial.println((String)"[checkBatValues]Charging startet at local time:"+hour()+":"+(minute()-6)+":"+second()+" " + year());
+          writeDebugMessageToInternalLog((String)"[checkBatValues]Charging startet at local time:"+hour()+":"+(minute()-6)+":"+second()+" " + year());
+          Serial.println((String)"[checkBatValues]with values: Battery"+batteryVoltage+" > "+batterVoltageHistory[batVoltHistCounter_tmp3] + " Battery Voltage History 3min ago > " +batterVoltageHistory[batVoltHistCounter_tmp6] + "Battery Voltage History 5min ago");
+          writeDebugMessageToInternalLog((String)"[checkBatValues]with values: Battery"+batteryVoltage+" > "+batterVoltageHistory[batVoltHistCounter_tmp3] + " Battery Voltage History 3min ago > " +batterVoltageHistory[batVoltHistCounter_tmp6] + "Battery Voltage History 5min ago");
+        }
+        }
+
         isCharging = true;
         hasCharged = true;
         robiAtHome = true;
         robiOnTheWayHome = false;
+        hasChargedDelay = 5; //wait at least 5 min before switching the "isCharging" status
         
-        if (debugMode>=1){
-          Serial.println((String)"[checkBatValues]Charging startet at local time:"+hour()+":"+(minute()-5)+":"+second()+" " + year());
-          writeDebugMessageToInternalLog((String)"[checkBatValues]Charging startet at local time:"+hour()+":"+(minute()-5)+":"+second()+" " + year());
-          Serial.println((String)"[checkBatValues]with values: Battery"+batteryVoltage+" > "+batterVoltageHistory[batVoltHistCounter_tmp3] + " Battery Voltage History 3min ago > " +batterVoltageHistory[batVoltHistCounter_tmp5] + "Battery Voltage History 5min ago");
-          writeDebugMessageToInternalLog((String)"[checkBatValues]with values: Battery"+batteryVoltage+" > "+batterVoltageHistory[batVoltHistCounter_tmp3] + " Battery Voltage History 3min ago > " +batterVoltageHistory[batVoltHistCounter_tmp5] + "Battery Voltage History 5min ago");
-        }
         return;
       }else{
-       isCharging = false; //we are consuming energy so we are not charging
+        hasChargedDelay--;
+        if(hasChargedDelay<=0){
+          isCharging = false; //we are consuming energy so we are not charging any more
+        }
       }
     }else{
-       isCharging = false; //we are consuming energy so we are not charging
+       hasChargedDelay--;
+        if(hasChargedDelay<=0){
+          isCharging = false; //we are consuming energy so we are not charging any more
+        }
     }
 }
 
