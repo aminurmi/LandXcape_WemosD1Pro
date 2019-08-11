@@ -8,7 +8,6 @@
  */
 #include <FS.h>
 #include <TimeLib.h>
-#include <Time.h>
 #include <WiFiUdp.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
@@ -19,8 +18,14 @@ const char* password = "linuxrulezz";
 const int robiPinCode = 1881;
 int baudrate = 115200;
 int debugMode = 1; //0 = off, 1 = moderate debug messages, 2 = all debug messages
+boolean onBoardLED = false; //(de)activates the usage of the onboard LED
+
 boolean NTPUpdateSuccessful = false;
-double version = 0.6461; //changes: Adaption: checkBatValues stabilizing
+double version = 0.64700; //changes: Adaption: checkBatValues stabilizing, BugFix: Send robi home at sunset, Statistics: Waiting delay after rain to see when robi will start again with mowing is shown now (only during Weather status: raining...")
+//Bugfix: Rain detection together with the rain delay, Administration: Raining information can now be directly forwarded to the LandXcape motherboard to achieve original behaviour if wished/selected
+//Ignore rain: If set, robi will mow the lawn always and not care anymore if it rains or not, NTP Delay 1200, Statistics: Shows Heap information - free Heap size, Heap fragmentation, bigest free heap block
+//System: Status Led can now be switched on/off via the variable onBoardLED within the code
+//Memory Optimizations: All Websites have been made smaller by 20-40% by removing simply some 'space's'
 
 int lastReadingSec=0;
 int lastReadingMin=0;
@@ -42,19 +47,14 @@ double highestCellVoltage = 0;
 double batterVoltageHistory [400];
 int batVoltHistCounter = 0;
 
-//boolean robiAtHomeOrOnTheWayHome = true;
-//boolean isCharging = false;
-//boolean hasCharged = false;
-
 boolean robiAtHome = false;
 boolean robiOnTheWayHome = false;
 boolean isCharging = false;
 boolean hasCharged = false;
-int hasChargedDelay = 5; //stabilize charging detection
+int hasChargedDelay = 6; //stabilize charging detection
 boolean raining = false;
 const int rainingDelay = 20; //in minutes delay after rain has been detected
 int rainingDelay_ = rainingDelay; //delay counter to subtract from
-
 
 int rainSensorShortcutTime = 10000; // 10sek shortcut the LandXcape Rain sensor cable with our relay since it only periodically checks for rain
 boolean rainSensorResults[10]; //boolean array for the rain sensor checks and its past values
@@ -65,11 +65,13 @@ int lastXXminBatHist = 100;
 const int maxBatHistValues = 400; // represents the max width of the statistic svg's
 boolean earlyGoHome = false;
 double earlyGoHomeVolt = 17.0;
+boolean forwardRainInfoToLandXcape = false;
+boolean ignoreRain = false;
 int dailyTasks = -1;
 boolean allDayMowing = false; //lawn mowing from sunrise to sunset
-const int maxLogEntries = 60;
-const int maxLogLength = 140;
-char logRotateBuffer [maxLogEntries][maxLogLength]; // 150*60*1byte je character = ~8.4kb (max) size
+const int maxLogEntries = 50;
+const int maxLogLength = 130;
+char logRotateBuffer [maxLogEntries][maxLogLength]; // 130*50*1byte je character = ~6.5kb (max) size
 int logRotateCounter = 0; 
 
 int STOP = D1;
@@ -107,7 +109,7 @@ boolean timeAdjusted = false;
 
 //Filesystem variables
 const char* batGraph = "/data/BatGraph.svg";
-const char* logStorage = "/data/logEntries.txt";
+const char* adminSite = "/data/adminSite.html";
 
 /**
  * Initialization process - setup ()
@@ -129,7 +131,7 @@ void setup() {
     Serial.begin(baudrate);
     delay(10);   
   }
-  
+ 
   pinMode(LED_BUILTIN,OUTPUT);
   digitalWrite(LED_BUILTIN, HIGH); //LED off for now
 
@@ -226,6 +228,7 @@ void setup() {
 }
 
 void loop() {
+
   //Webserver section
   wwwserver.handleClient(); 
 
@@ -303,7 +306,7 @@ void loop() {
         //check if it is time to bring robi home if allDayMowing is active only!
         int currentTimeInMin = hour()*60+minute();
         
-        if (allDayMowing==true && robiAtHome==false && robiOnTheWayHome == false && currentTimeInMin > sunset && currentTimeInMin < sunrise){
+        if (allDayMowing==true && robiAtHome==false && robiOnTheWayHome == false && (currentTimeInMin > sunset || currentTimeInMin < sunrise)){ 
           
           showWebsite=false;
           handleStopMowing();
@@ -317,26 +320,36 @@ void loop() {
         }
         
         //check for rain
-        if (getRainSensorStatus() && robiOnTheWayHome == false && robiAtHome == false && raining == false){ //if true then rain has been detected -> send robi home
-            if (debugMode>=1){
-                    Serial.println((String)"[loop]Rain has been detected. Sending Robi home to base...");
-                    writeDebugMessageToInternalLog((String)"[loop]Rain has been detected. Sending Robi home to base...");
-            }
-             showWebsite=false;
-             handleStopMowing(); //stop mowing to allow to send robi home
-             handleGoHome(); //send Robi home
-             showWebsite=true;
-             
+        if (getRainSensorStatus()){ //if true then rain has been detected -> send robi home
+            
+            if(robiOnTheWayHome == false && robiAtHome == false){ //-> send robi home if not already on the way or at home
+              if (debugMode>=1){
+                      Serial.println((String)"[loop]Rain has been detected. Sending Robi home to base...");
+                      writeDebugMessageToInternalLog((String)"[loop]Rain has been detected. Sending Robi home to base...");
+              }
+               showWebsite=false;
+               handleStopMowing(); //stop mowing to allow to send robi home
+               handleGoHome(); //send Robi home
+               showWebsite=true;
+            }           
              raining = true;
              rainingDelay_ = rainingDelay;
+
+            if (forwardRainInfoToLandXcape==true){ //forward raining information to LandXcape as wished
+               reportRainToLandXCape();
+               if (debugMode>=1){
+                      Serial.println("[loop]Raining information has been forwarded to LandXcape as selected.");
+                      writeDebugMessageToInternalLog("[loop]Raining information has been forwarded to LandXcape as selected.");
+              }
+            }
+             
         }else{
           // check if need to update the raining variable
-          if (raining == true && getRainSensorStatus==false){
+          if (raining == true && getRainSensorStatus()==false){
             rainingDelay_--; //subtracts 1 every minute
-
             if (rainingDelay_<=0){
               rainingDelay_=rainingDelay; //reset value
-              raining = false; //Raining delay time has passed. Switch raining variable to fals
+              raining = false; //Raining delay time has passed. Switch raining variable to false
             }
           }
         }
@@ -380,10 +393,11 @@ static void handleRoot(void){
     Serial.println((String)"[handleRoot]Connection from outside established at local time:"+hour()+":"+minute()+":"+second()+" " + year());
     writeDebugMessageToInternalLog((String)"[handleRoot]Connection from outside established at local time:"+hour()+":"+minute()+":"+second()+" " + year());
   }
-  digitalWrite(LED_BUILTIN, LOW); //show connection via LED  
-
+  if(onBoardLED){
+    digitalWrite(LED_BUILTIN, LOW); //show connection via LED  
+  }
   //preparation work
-  char temp[1500];
+  char temp[1250];
   int sec = millis() / 1000;
   int min = sec / 60;
   int hr = min / 60;
@@ -393,44 +407,42 @@ static void handleRoot(void){
   A0reading = A0reading / baseFor1V;
   batteryVoltage = A0reading * faktorBat;
   
-  snprintf(temp, 1500,
-
-           "<html>\
-            <head>\
-              <title>LandXcape</title>\
-              <style>\
-                body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
-              </style>\
-              <meta http-equiv='Refresh' content='10; url=\\'>\
-            </head>\
-              <body>\
-                <h1>LandXcape</h1>\
-                <p>Uptime: %02d:%02d:%02d</p>\
-                <p>Local time: %02d:%02d:%02d</p>\
-                <p>Version: %02lf</p>\
-                <p>Battery Voltage: %02lf</p>\
-                <br>\
-                <form method='POST' action='/start'><button type='submit'>Start</button></form>\
-                <br>\
-                <form method='POST' action='/stop'><button type='submit'>Stop</button></form>\
-                <br>\
-                <form method='POST' action='/goHome'><button type='submit'>go Home</button></form>\
-                <br>\
-                <form method='POST' action='/stats'><button type='submit'>Statistics</button></form>\
-                <br>\
-                <form method='POST' action='/configure'><button type='submit'>Administration</button></form>\
-                <br>\
-                <form method='POST' action='/PWRButton'><button type='submit'>Power Robi off / on</button></form>\
-                <br>\
-              </body>\
-            </html>",
-
-           hr, min % 60, sec % 60,
-           hour(),minute(),second(),version,batteryVoltage
-          );
+  snprintf(temp, 1250,
+     "<html>\
+      <head>\
+        <title>LandXcape</title>\
+        <style>\
+          body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
+        </style>\
+        <meta http-equiv='Refresh' content='10; url=\\'>\
+      </head>\
+        <body>\
+          <h1>LandXcape</h1>\
+          <p>Uptime: %02d:%02d:%02d</p>\
+          <p>Local time: %02d:%02d:%02d</p>\
+          <p>Version: %02lf</p>\
+          <p>Battery Voltage: %02lf</p>\
+          <br>\
+          <form method='POST' action='/start'><button type='submit'>Start</button></form>\
+          <br>\
+          <form method='POST' action='/stop'><button type='submit'>Stop</button></form>\
+          <br>\
+          <form method='POST' action='/goHome'><button type='submit'>go Home</button></form>\
+          <br>\
+          <form method='POST' action='/stats'><button type='submit'>Statistics</button></form>\
+          <br>\
+          <form method='POST' action='/configure'><button type='submit'>Administration</button></form>\
+          <br>\
+          <form method='POST' action='/PWRButton'><button type='submit'>Power Robi off / on</button></form>\
+          <br>\
+        </body>\
+      </html>",hr, min % 60, sec % 60,
+       hour(),minute(),second(),version,batteryVoltage
+      );
   wwwserver.send(200, "text/html", temp);
-
-  digitalWrite(LED_BUILTIN, HIGH); //show successful answer to request  
+  if(onBoardLED){
+    digitalWrite(LED_BUILTIN, HIGH); //show successful answer to request    
+  }
 }
 
 /*
@@ -457,24 +469,24 @@ static void handleStartMowing(void){
     writeDebugMessageToInternalLog((String)"[handleStartMowing]Mowing started at local time:"+hour()+":"+minute()+":"+second()+" " + year());
   }
   if (showWebsite){
-    char temp[700];
-    snprintf(temp, 700,
-             "<html>\
-              <head>\
-                <title>LandXcape</title>\
-                <style>\
-                  body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
-                </style>\
-                <meta http-equiv='Refresh' content='2; url=\\'>\
-              </head>\
-                <body>\
-                  <h1>LandXcape</h1>\
-                  <p></p>\
-                  <p>Mowing started at local time: %02d:%02d:%02d</p>\
-                </body>\
-              </html>",
-              hour(),minute(),second()
-              );
+    char temp[480];
+    snprintf(temp, 480,
+       "<html>\
+        <head>\
+          <title>LandXcape</title>\
+          <style>\
+            body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
+          </style>\
+          <meta http-equiv='Refresh' content='2; url=\\'>\
+        </head>\
+          <body>\
+            <h1>LandXcape</h1>\
+            <p></p>\
+            <p>Mowing started at local time: %02d:%02d:%02d</p>\
+          </body>\
+        </html>",
+        hour(),minute(),second()
+        );
     wwwserver.send(200, "text/html", temp);
   }
 
@@ -505,24 +517,24 @@ static void handleStopMowing(){
     writeDebugMessageToInternalLog((String)"[handleStopMowing]Mowing stoped at local time:"+hour()+":"+minute()+":"+second()+" " + year());
   }
   if(showWebsite){
-    char temp[700];
-    snprintf(temp, 700,
-             "<html>\
-              <head>\
-                <title>LandXcape</title>\
-                <style>\
-                  body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
-                </style>\
-                <meta http-equiv='Refresh' content='2; url=\\'>\
-              </head>\
-                <body>\
-                  <h1>LandXcape</h1>\
-                  <p></p>\
-                  <p>Mowing stoped at local time: %02d:%02d:%02d</p>\
-                </body>\
-              </html>",
-              hour(),minute(),second()
-              );
+    char temp[450];
+    snprintf(temp, 450,
+     "<html>\
+      <head>\
+        <title>LandXcape</title>\
+        <style>\
+          body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
+        </style>\
+        <meta http-equiv='Refresh' content='2; url=\\'>\
+      </head>\
+        <body>\
+          <h1>LandXcape</h1>\
+          <p></p>\
+          <p>Mowing stoped at local time: %02d:%02d:%02d</p>\
+        </body>\
+      </html>",
+      hour(),minute(),second()
+      );
     wwwserver.send(200, "text/html", temp);
   }
 }
@@ -551,24 +563,24 @@ static void handleGoHome(){
     writeDebugMessageToInternalLog((String)"[handleGoHome]Robi sent home at local time:"+hour()+":"+minute()+":"+second()+" " + year());
   }
   if (showWebsite){
-  char temp[700];
-    snprintf(temp, 700,
-             "<html>\
-              <head>\
-                <title>LandXcape</title>\
-                <style>\
-                  body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
-                </style>\
-                <meta http-equiv='Refresh' content='2; url=\\'>\
-              </head>\
-                <body>\
-                  <h1>LandXcape</h1>\
-                  <p></p>\
-                  <p>Mowing stoped and sent back to base at local time: %02d:%02d:%02d</p>\
-                </body>\
-              </html>",
-              hour(),minute(),second()
-              );
+  char temp[470];
+    snprintf(temp, 470,
+     "<html>\
+      <head>\
+        <title>LandXcape</title>\
+        <style>\
+          body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
+        </style>\
+        <meta http-equiv='Refresh' content='2; url=\\'>\
+      </head>\
+        <body>\
+          <h1>LandXcape</h1>\
+          <p></p>\
+          <p>Mowing stoped and sent back to base at local time: %02d:%02d:%02d</p>\
+        </body>\
+      </html>",
+      hour(),minute(),second()
+      );
     wwwserver.send(200, "text/html", temp);
   }
 
@@ -584,7 +596,9 @@ static void handleGoHome(){
  */
 
 static void showStatistics(void){
- digitalWrite(LED_BUILTIN, LOW); //show connection via LED 
+  if(onBoardLED){
+    digitalWrite(LED_BUILTIN, LOW); //show connection via LED   
+  }
  
     if (debugMode>=2){
       Serial.println((String)"[showStatistics]showStatistics site requested at local time:"+hour()+":"+minute()+":"+second()+" " + year());
@@ -634,66 +648,87 @@ static void showStatistics(void){
     }
 
     char rainStatus_ [] = "Not raining";
+    char rainDelay_ [] ="20";
+    char rainDelayText_ [37] = "";
+    
     if(getRainSensorStatus()){
-      strncpy(rainStatus_, "raining ...", sizeof(rainStatus_));
+      strncpy(rainStatus_, "raining...", sizeof(rainStatus_));
+
+      itoa(rainingDelay_,rainDelay_,10);
+      strcat(rainDelayText_,"Waiting delay: ");
+      strcat(rainDelayText_,rainDelay_);
+      strcat(rainDelayText_," minutes");
+    }else{
+      if (raining){ //show as long as the raining flag is active
+        strncpy(rainStatus_, "raining...", sizeof(rainStatus_));
+        
+        itoa(rainingDelay_,rainDelay_,10);
+        strcat(rainDelayText_,"Waiting delay after rain: ");
+        strcat(rainDelayText_,rainDelay_);
+        strcat(rainDelayText_," minutes");
+      }
     }
         
-    char temp[2000];
-    snprintf(temp, 2000,
-             "<html>\
-              <head>\
-                <title>LandXcape Statistics</title>\
-                <style>\
-                  body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
-                </style>\
-                <meta http-equiv='Refresh' content='10; url=\\stats'>\
-              </head>\
-                <body>\
-                  <h1>LandXcape Statistics</h1>\
-                  <p></p>\
-                  <p>Uptime: %02d days %02d hour %02d min %02d sec</p>\
-                  <p>Time: %02d:%02d:%02d</p>\
-                  <p>Date: %02d:%02d:%02d</p>\
-                  <p>Computed sunrise approx: %s</p>\
-                  <p>Computed sunset approx: %s</p>\
-                  <p>HasCharged/isCharging: %s/%s   (OnTheWay)Home: (%s)%s</p>\
-                  <p>Weather status: %s</p>\
-                  <p>Version: %02lf</p>\
-                  \
-                  <table style='width:450px'>\
-                    <tr>\
-                      <th><b>Battery:</b></th>\
-                    </tr>\
-                    <tr>\
-                      <th>Actual voltage: %02lf</th>\
-                      <th>Lowest voltage: %02lf</th>\
-                      <th>Highest voltage: %02lf</th>\
-                    </tr>\
-                    <tr>\
-                      <th><b>Cell:</b></th>\
-                      <th></th>\
-                      <th></th>\
-                    </tr>\
-                    <tr>\
-                      <th>Actual voltage: %02lf</th>\
-                      <th>Lowest voltage: %02lf</th>\
-                      <th>Highest voltage: %02lf</th>\
-                    </tr>\
-                  </table>\
-                  <p></p>\
-                  <p><b>Battery history of the last %02dmin</b></p>\
-                  <img src=\"/BatGraph.svg\" />\
-                  <p></p>\
-                  <form method='POST' action='/'><button type='submit'>Back to main menu</button></form>\
-                </body>\
-              </html>",
-              days,hr%24, min % 60, sec % 60,hour(),minute(),second(),day(),month(),year(),sunrise__,sunset__,hasChargedValue,isChargingValue,robiOnTheWayHomeValue,robiAtHomeValue,rainStatus_,
-              version,batteryVoltage,lowestBatVoltage,highestBatVoltage,cellVoltage,lowestCellVoltage,highestCellVoltage,lastXXminBatHist
-              );
+    char temp[1820];
+    snprintf(temp, 1820,
+     "<html>\
+      <head>\
+        <title>LandXcape Statistics</title>\
+        <style>\
+          body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
+        </style>\
+        <meta http-equiv='Refresh' content='10; url=\\stats'>\
+      </head>\
+        <body>\
+          <h1>LandXcape Statistics</h1>\
+          <p></p>\
+          <p>Uptime: %02d days %02d hour %02d min %02d sec</p>\
+          <p>Time: %02d:%02d:%02d</p>\
+          <p>Date: %02d:%02d:%02d</p>\
+          <p>Computed sunrise approx: %s</p>\
+          <p>Computed sunset approx: %s</p>\
+          <p>HasCharged/isCharging: %s/%s   (OnTheWay)Home: (%s)%s</p>\
+          <p>Weather status: %s %s</p>\
+          <p>Version: %02lf</p>\
+          <br>\
+          <table style='width:450px'>\
+            <tr>\
+              <th><b>Battery:</b></th>\
+            </tr>\
+            <tr>\
+              <th>Actual voltage: %02lf</th>\
+              <th>Lowest voltage: %02lf</th>\
+              <th>Highest voltage: %02lf</th>\
+            </tr>\
+            <tr>\
+              <th><b>Cell:</b></th>\
+              <th></th>\
+              <th></th>\
+            </tr>\
+            <tr>\
+              <th>Actual voltage: %02lf</th>\
+              <th>Lowest voltage: %02lf</th>\
+              <th>Highest voltage: %02lf</th>\
+            </tr>\
+          </table>\
+          <p></p>\
+          <p><b>Battery history of the last %02dmin</b></p>\
+          <img src=\"/BatGraph.svg\" />\
+          <p></p>\
+          <p><b>Memory Information in bytes:</b></p>\
+          <p>Free Heap: %d - Fragmentation: %d - MaxFreeBlockSize: %d</p>\
+          <form method='POST' action='/'><button type='submit'>Back to main menu</button></form>\
+        </body>\
+      </html>",
+      days,hr%24, min % 60, sec % 60,hour(),minute(),second(),day(),month(),year(),sunrise__,sunset__,hasChargedValue,isChargingValue,robiOnTheWayHomeValue,robiAtHomeValue,rainStatus_,rainDelayText_,
+      version,batteryVoltage,lowestBatVoltage,highestBatVoltage,cellVoltage,lowestCellVoltage,highestCellVoltage,lastXXminBatHist,ESP.getFreeHeap(),ESP.getHeapFragmentation(),ESP.getMaxFreeBlockSize()
+      );
 
     wwwserver.send(200, "text/html", temp);
 
- digitalWrite(LED_BUILTIN, HIGH); //show connection via LED 
+  if(onBoardLED){
+    digitalWrite(LED_BUILTIN, HIGH); //show connection via LED   
+  }
 }
 
 /*
@@ -701,7 +736,9 @@ static void showStatistics(void){
  */
 static void handleAdministration(void){
 
-  digitalWrite(LED_BUILTIN, LOW); //show connection via LED 
+  if(onBoardLED){
+    digitalWrite(LED_BUILTIN, LOW); //show connection via LED   
+  }
 
     if (debugMode>=1){
       Serial.println((String)"[handleAdmin]Administration site requested at local time:"+hour()+":"+minute()+":"+second()+" " + year());
@@ -719,56 +756,76 @@ static void handleAdministration(void){
     char allDayMowingCheckBoxValue [] = "unchecked";
     if (allDayMowing==true){
       strncpy(allDayMowingCheckBoxValue, "checked  ",sizeof(allDayMowingCheckBoxValue));
-    }    
+    }   
+
+    char forwardRainInfoValue [] = "unchecked";
+    if (forwardRainInfoToLandXcape==true){
+      strncpy(forwardRainInfoValue, "checked  ",sizeof(forwardRainInfoValue));
+    }
+    
+    char ignoreRainValue [] = "unchecked";
+    if (ignoreRain==true){
+      strncpy(ignoreRainValue, "checked  ",sizeof(ignoreRainValue));
+    } 
 
     char temp[2300];
     snprintf(temp, 2300,
-               "<html>\
-               <title>LandXcape</title>\
-                <style>\
-                  body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088;}\
-                </style>\
-              </head>\
-                <body>\
-                  <h1>LandXcape Administration Site</h1>\
-                  <p></p>\
-                  <form method='POST' action='/newAdminConfiguration'>\
-                  Battery history: Show <input type='number' name='batHistMinShown' value='%02d'  min=60 max=400> minutes<br>\
-                  Activate function \"Go Home Early\" <input type='checkbox' name='goHomeEarly' %02s ><br>\
-                  If activated, send LandXcape home at: <input type='number' name='batVol' value='%02d' min=16 max=20> V <input type='number' name='batMiliVolt' value='%03d' min=000 max=999>mV<br>\
-                  If not activated, this value is used to define the battery voltage <br> where no new round of mowing should be started before charging again.<br>\
-                  <br>\
-                  Activate function \"Mowing from sunrise to sunset\" <input type='checkbox' name='allDayMowing_' %02s ><br>\
-                  <br>\
-                  FileSystem Functions: <br>\
-                  Format FileSystem <b>ATTENTION All persistent Data will be lost ATTENTION</b> <input type='checkbox' name='formatFlashStorage'><br>\
-                  This must be done once before the filesystem can be used.<br>\
-                  Will take about 60Seconds<br>\
-                  <br>\
-                  <input type='submit' value='Submit'></form>\
-                  <form method='POST' action='/'><button type='submit'>Cancel</button></form>\
-                  <p></p>\
-                  <br>\
-                  <table style='width:450px'>\
-                    <tr>\
-                      <th><form method='POST' action='/updateLandXcape'><button type='submit'>SW Update via WLAN</button></form></th>\
-                      <th><form method='POST' action='/resetWemos'><button type='submit'>Reset WEMOS board</button></form></th>\
-                      <th><form method='POST' action='/logFiles'><button type='submit'>Show Log-Entries</button></form></th>\
-                    </tr>\
-                  </table>\
-                </body>\
-              </html>",lastXXminBatHist,earlyGoHomeCheckBoxValue,earlyGoHomeVolt_,earlyGoHome_mVolt_,allDayMowingCheckBoxValue
-                );  
-                
-    wwwserver.send(200, "text/html", temp);
-    digitalWrite(LED_BUILTIN, HIGH); //show connection via LED 
+     "<html>\
+     <head>\
+     <title>LandXcape</title>\
+      <style>\
+        body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088;}\
+      </style>\
+    </head>\
+      <body>\
+        <h1>LandXcape Administration Site</h1>\
+        <p></p>\
+        <form method='POST' action='/newAdminConfiguration'>\
+        Battery history: Show <input type='number' name='batHistMinShown' value='%02d'  min=60 max=400> minutes<br>\
+        Activate function \"Go Home Early\" <input type='checkbox' name='goHomeEarly' %02s ><br>\
+        If activated, send LandXcape home at: <input type='number' name='batVol' value='%02d' min=16 max=20> V <input type='number' name='batMiliVolt' value='%03d' min=000 max=999>mV<br>\
+        If not activated, this value is used to define the battery voltage <br> where no new round of mowing should be started before charging again.<br>\
+        <br>\
+        Activate function \"Mowing from sunrise to sunset\" <input type='checkbox' name='allDayMowing_' %s ><br>\
+        <br>\
+        Forward rain information to LandXcape to trigger original behavior <input type='checkbox' name='forwardRainInfo_' %s ><br>\
+        <br>\
+        Ignore rain - just mow nevertheless if it rains or not <input type='checkbox' name='ignoreRain_' %s ><br>\
+        <br>\
+        FileSystem Functions: <br>\
+        Format FileSystem <b>ATTENTION All persistent Data will be lost ATTENTION</b> <input type='checkbox' name='formatFlashStorage'><br>\
+        This must be done once before the filesystem can be used.<br>\
+        Will take about 60Seconds<br>\
+        <br>\
+        <input type='submit' value='Submit'></form>\
+        <form method='POST' action='/'><button type='submit'>Cancel</button></form>\
+        <p></p>\
+        <br>\
+        <table style='width:450px'>\
+          <tr>\
+            <th><form method='POST' action='/updateLandXcape'><button type='submit'>SW Update via WLAN</button></form></th>\
+            <th><form method='POST' action='/resetWemos'><button type='submit'>Reset WEMOS board</button></form></th>\
+            <th><form method='POST' action='/logFiles'><button type='submit'>Show Log-Entries</button></form></th>\
+          </tr>\
+        </table>\
+      </body>\
+    </html>",lastXXminBatHist,earlyGoHomeCheckBoxValue,earlyGoHomeVolt_,earlyGoHome_mVolt_,allDayMowingCheckBoxValue,forwardRainInfoValue,ignoreRainValue
+      );
+
+      wwwserver.send(200, "text/html", temp);        
+
+    if(onBoardLED){
+      digitalWrite(LED_BUILTIN, HIGH); //show successful answer to request    
+    }
 }
 
 /**
  * computeNewAdminConfig overwrites the present values by the given values from the user
  */
 static void computeNewAdminConfig(void){
-  digitalWrite(LED_BUILTIN, LOW); //show connection via LED 
+  if(onBoardLED){
+    digitalWrite(LED_BUILTIN, LOW); //show connection via LED   
+  }
  
     // Check if the POST request has crendentials and if they are correct
     if(! wwwserver.hasArg("batHistMinShown") || wwwserver.arg("batHistMinShown") == NULL ||
@@ -789,31 +846,35 @@ static void computeNewAdminConfig(void){
     earlyGoHomeVolt = (double)batVolt+(double) batMiliVolt/1000;
 
     allDayMowing = (boolean)wwwserver.hasArg("allDayMowing_");
+    forwardRainInfoToLandXcape = (boolean)wwwserver.hasArg("forwardRainInfo_");
+    ignoreRain = (boolean)wwwserver.hasArg("ignoreRain_");
 
     boolean formatFlashStorage = (boolean)wwwserver.hasArg("formatFlashStorage");
     
-    char temp[1200];
-    snprintf(temp, 1200,
-             "<html>\
-              <head>\
-                <title>LandXcape</title>\
-                <style>\
-                  body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
-                </style>\
-                <meta http-equiv='Refresh' content='3; url=\\'>\
-              </head>\
-                <body>\
-                  <h1>LandXcape - administration changes submited at local time: %02d:%02d:%02d</h1>\
-                  <p></p>\
-                  <p>LastXXminBatHist Variable changed to: %02d</p>\
-                  <p>GoHomeEarly Function: %d</p>\
-                  <p>GoHomeEarly Voltage:: %2.3f</p>\
-                  <p>Mow from sunrise to Sunset Function: %d</p>\
-                  <p>Flash Storage will be formated: %d</p>\
-              </body>\
-            </html>",
-            hour(),minute(),second(),lastXXminBatHist,earlyGoHome,earlyGoHomeVolt,allDayMowing,formatFlashStorage
-            );
+    char temp[820];
+    snprintf(temp, 820,
+     "<html>\
+      <head>\
+        <title>LandXcape</title>\
+        <style>\
+          body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
+        </style>\
+        <meta http-equiv='Refresh' content='3; url=\\'>\
+      </head>\
+        <body>\
+          <h1>LandXcape - administration changes submited at local time: %02d:%02d:%02d</h1>\
+          <p></p>\
+          <p>LastXXminBatHist Variable changed to: %02d</p>\
+          <p>GoHomeEarly Function: %d</p>\
+          <p>GoHomeEarly Voltage:: %2.3f</p>\
+          <p>ForwardRainInfoToLandXcape Function: %d</p>\
+          <p>Ignore rain Function: %d</p>\
+          <p>Mow from sunrise to Sunset Function: %d</p>\
+          <p>Flash Storage will be formated: %d</p>\
+      </body>\
+    </html>",
+    hour(),minute(),second(),lastXXminBatHist,earlyGoHome,earlyGoHomeVolt,forwardRainInfoToLandXcape,ignoreRain,allDayMowing,formatFlashStorage
+    );
     wwwserver.send(200, "text/html", temp);
 
     if (debugMode>=1){
@@ -829,6 +890,10 @@ static void computeNewAdminConfig(void){
       writeDebugMessageToInternalLog((String)"[computeNewAdminConfig]GoHomeEarly Function:"+earlyGoHome);
       Serial.println((String)"[computeNewAdminConfig]GoHomeEarly Voltage:"+earlyGoHomeVolt);
       writeDebugMessageToInternalLog((String)"[computeNewAdminConfig]GoHomeEarly Voltage:"+earlyGoHomeVolt);
+      Serial.println((String)"[computeNewAdminConfig]ForwardRainInfoToLandXcape Function:"+forwardRainInfoToLandXcape);
+      writeDebugMessageToInternalLog((String)"[computeNewAdminConfig]ForwardRainInfoToLandXcape Function:"+forwardRainInfoToLandXcape);
+      Serial.println((String)"[computeNewAdminConfig]Ignore rain Function:"+ignoreRain);
+      writeDebugMessageToInternalLog((String)"[computeNewAdminConfig]Ignore rain Function:"+ignoreRain);
       Serial.println((String)"[computeNewAdminConfig]Mow from sunrise to Sunset Function:"+allDayMowing);
       writeDebugMessageToInternalLog((String)"[computeNewAdminConfig]Mow from sunrise to Sunset Function:"+allDayMowing);
       Serial.println((String)"[computeNewAdminConfig]Flash storage shall be formated:"+formatFlashStorage);
@@ -849,7 +914,9 @@ static void computeNewAdminConfig(void){
       }
       formatFS();
     } 
-    digitalWrite(LED_BUILTIN, HIGH); //show connection via LED 
+    if(onBoardLED){
+      digitalWrite(LED_BUILTIN, HIGH); //show successful answer to request    
+    }
 }
 
 /*
@@ -867,24 +934,24 @@ static void handleSwitchOnOff(void){
    digitalWrite(PWR,HIGH);//Release Home Button 
    delay(PWRButtonPressTime);
    
-  char temp[700];
-  snprintf(temp, 700,
-           "<html>\
-            <head>\
-              <title>LandXcape</title>\
-              <style>\
-                body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
-              </style>\
-              <meta http-equiv='Refresh' content='4; url=\\'>\
-            </head>\
-              <body>\
-                <h1>LandXcape</h1>\
-                <p></p>\
-                <p>Robi switched off/on at local time: %02d:%02d:%02d</p>\
-              </body>\
-            </html>",
-            hour(),minute(),second()
-            );
+  char temp[420];
+  snprintf(temp, 420,
+   "<html>\
+    <head>\
+      <title>LandXcape</title>\
+      <style>\
+        body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
+      </style>\
+      <meta http-equiv='Refresh' content='4; url=\\'>\
+    </head>\
+      <body>\
+        <h1>LandXcape</h1>\
+        <p></p>\
+        <p>Robi switched off/on at local time: %02d:%02d:%02d</p>\
+      </body>\
+    </html>",
+    hour(),minute(),second()
+    );
   wwwserver.send(200, "text/html", temp);
 
   enterPinCode();
@@ -1015,7 +1082,7 @@ static boolean syncTimeViaNTP(void){
     udp.endPacket();
 
     // wait for a sure reply or otherwise cancel time setting process
-    delay(1000);
+    delay(1200);
     int cb = udp.parsePacket();
     if (!cb){
        if (debugMode){
@@ -1076,27 +1143,31 @@ static boolean syncTimeViaNTP(void){
 }
 
 static void handleWebUpdate(void){
-  digitalWrite(LED_BUILTIN, LOW); //show connection via LED 
+  
+  if(onBoardLED){
+    digitalWrite(LED_BUILTIN, LOW); //show connection via LED   
+  }
 
   //preparation work
-  char temp[700];
-  snprintf(temp, 700,
-           "<html>\
-  <head>\
-    <title>LandXcape WebUpdate Site</title>\
-    <style>\
-      body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
-    </style>\
-  </head>\
-    <body>\
-      <h1>LandXcape WebUpdate Site</h1>\
-      <p>Local time: %02d:%02d:%02d</p>\
-      <p>Version: %02lf</p>\
-           <form method='POST' action='/updateBin' enctype='multipart/form-data'><input type='file' name='update'><input type='submit' value='Update'></form>\
-           <form method='POST' action='/'><button type='submit'>Cancel</button></form>\
-           </body> </html>",
-           hour(),minute(),second(),version
-          );
+  char temp[650];
+  snprintf(temp, 650,
+   "<html>\
+    <head>\
+      <title>LandXcape WebUpdate Site</title>\
+      <style>\
+        body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
+      </style>\
+    </head>\
+      <body>\
+        <h1>LandXcape WebUpdate Site</h1>\
+        <p>Local time: %02d:%02d:%02d</p>\
+        <p>Version: %02lf</p>\
+         <form method='POST' action='/updateBin' enctype='multipart/form-data'><input type='file' name='update'><input type='submit' value='Update'></form>\
+         <form method='POST' action='/'><button type='submit'>Cancel</button></form>\
+      </body>\
+    </html>",
+     hour(),minute(),second(),version
+     );
           
   //present website 
   wwwserver.send(200, "text/html", temp);
@@ -1106,11 +1177,15 @@ static void handleWebUpdate(void){
           writeDebugMessageToInternalLog((String)"[handleWebUpdate]WebUpdate site requested...");
     }
 
-  digitalWrite(LED_BUILTIN, HIGH); //show connection via LED 
+    if(onBoardLED){
+      digitalWrite(LED_BUILTIN, HIGH); //show successful answer to request    
+    } 
 }
 
 static void handleUpdateViaBinary(void){
-  digitalWrite(LED_BUILTIN, LOW); //show working process via LED 
+  if(onBoardLED){
+    digitalWrite(LED_BUILTIN, LOW); //show connection via LED   
+  }
   if (debugMode>=1){
           Serial.println("[handleUpdateViaBinary]handleUpdateViaBinary function triggered...");
           writeDebugMessageToInternalLog((String)"[handleUpdateViaBinary]handleUpdateViaBinary function triggered...");
@@ -1128,12 +1203,16 @@ static void handleUpdateViaBinary(void){
   SPIFFS.end();
   delay(200); //wait 200ms to ensure that the Filesystem has been unmounted
   
-  digitalWrite(LED_BUILTIN, HIGH); //show working process via LED 
+  if(onBoardLED){
+    digitalWrite(LED_BUILTIN, HIGH); //show successful answer to request    
+  }
   ESP.restart();
 }
 
 static void handleWebUpdateHelperFunction (void){
-  digitalWrite(LED_BUILTIN, LOW); //show working process via LED 
+  if(onBoardLED){
+    digitalWrite(LED_BUILTIN, LOW); //show connection via LED   
+  } 
 
   HTTPUpload& upload = wwwserver.upload();
       if (upload.status == UPLOAD_FILE_START) {
@@ -1153,24 +1232,24 @@ static void handleWebUpdateHelperFunction (void){
           Serial.printf("Update Success: %u\nRebooting...\n", upload.totalSize);
 
       //send the user back to the main page
-        char temp[700];
-        snprintf(temp, 700,
-               "<html>\
-                <head>\
-                  <title>LandXcape</title>\
-                  <style>\
-                    body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
-                  </style>\
-                  <meta http-equiv='Refresh' content='5; url=\\'>\
-                </head>\
-                  <body>\
-                    <h1>LandXcape</h1>\
-                    <p></p>\
-                    <p>Update successfull at Local time: %02d:%02d:%02d</p>\
-                  </body>\
-                </html>",
-                hour(),minute(),second()
-                );
+        char temp[500];
+        snprintf(temp, 500,
+         "<html>\
+          <head>\
+            <title>LandXcape</title>\
+            <style>\
+              body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
+            </style>\
+            <meta http-equiv='Refresh' content='5; url=\\'>\
+          </head>\
+            <body>\
+              <h1>LandXcape</h1>\
+              <p></p>\
+              <p>Update successfull at Local time: %02d:%02d:%02d</p>\
+            </body>\
+          </html>",
+          hour(),minute(),second()
+          );
       wwwserver.send(200, "text/html", temp);
           
         } else {
@@ -1179,7 +1258,9 @@ static void handleWebUpdateHelperFunction (void){
         Serial.setDebugOutput(false);
       }
 
-  digitalWrite(LED_BUILTIN, HIGH); //show working process via LED 
+    if(onBoardLED){
+      digitalWrite(LED_BUILTIN, HIGH); //show successful answer to request    
+    }
 }
 
 /**
@@ -1305,24 +1386,24 @@ void resetWemosBoard(void){
           writeDebugMessageToInternalLog("[resetWemosBoard]Software reset triggered. Reseting...");
   }
 
-  char temp[700];
-  snprintf(temp, 700,
-           "<html>\
-            <head>\
-              <title>LandXcape</title>\
-              <style>\
-                body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
-              </style>\
-              <meta http-equiv='Refresh' content='2; url=\\'>\
-            </head>\
-              <body>\
-                <h1>LandXcape</h1>\
-                <p></p>\
-                <p>Software reset triggered. Reseting... at Time: %02d:%02d:%02d</p>\
-              </body>\
-            </html>",
-            hour(),minute(),second()
-            );
+  char temp[450];
+  snprintf(temp, 450,
+   "<html>\
+    <head>\
+      <title>LandXcape</title>\
+      <style>\
+        body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
+      </style>\
+      <meta http-equiv='Refresh' content='2; url=\\'>\
+    </head>\
+      <body>\
+        <h1>LandXcape</h1>\
+        <p></p>\
+        <p>Software reset triggered. Reseting... at Time: %02d:%02d:%02d</p>\
+      </body>\
+    </html>",
+    hour(),minute(),second()
+    );
   wwwserver.send(200, "text/html", temp);
 
   //unmount filesystem before rebooting
@@ -1453,7 +1534,7 @@ static void checkBatValues(void){
         hasCharged = true;
         robiAtHome = true;
         robiOnTheWayHome = false;
-        hasChargedDelay = 5; //wait at least 5 min before switching the "isCharging" status
+        hasChargedDelay = 6; //wait at least 6 min before switching the "isCharging" status
         
         return;
       }else{
@@ -1537,31 +1618,32 @@ static void presentLogEntriesFromInternalLog(void){
 
   int counter = ((logRotateCounter+1)%maxLogEntries); //to get the latest entry
 
-  String tmp = "<html>\
-                <head>\
-                  <title>LandXcape - WEMOS - Debug Entries</title>\
-                  <style>\
-                    body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
-                  </style>\
-                </head>\
-                  <body>\
-                    <h1>LandXcape - WEMOS - Debug Entries</h1>\
-                    <p></p>\
-                    <table style='width:450px'>\
-                      <tr>\
-                        <th><form method='POST' action='/logFiles'><button type='submit'>Reload</button></form></th>\
-                        <th><form method='POST' action='/configure'><button type='submit'>Exit</button></form></th>\
-                      </tr>\
-                    </table>\
-                   <br>";
+  String tmp = 
+    "<html>\
+    <head>\
+      <title>LandXcape - WEMOS - Debug Entries</title>\
+      <style>\
+        body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
+      </style>\
+    </head>\
+      <body>\
+        <h1>LandXcape - WEMOS - Debug Entries</h1>\
+        <p></p>\
+        <table style='width:450px'>\
+          <tr>\
+            <th><form method='POST' action='/logFiles'><button type='submit'>Reload</button></form></th>\
+            <th><form method='POST' action='/configure'><button type='submit'>Exit</button></form></th>\
+          </tr>\
+        </table>\
+       <br>";
                    
-                    for (int i=0;i<maxLogEntries;i++){
-                      tmp = tmp + logRotateBuffer[counter] + "<br>";
-                      counter = (counter+1)%maxLogEntries;
-                    }
+      for (int i=0;i<maxLogEntries;i++){
+        tmp = tmp + logRotateBuffer[counter] + "<br>";
+        counter = (counter+1)%maxLogEntries;
+      }
                     
-      tmp = tmp + "</body>\
-                </html>";
+      tmp = tmp + "</body></html>";
+      
   wwwserver.send(200, "text/html", tmp);
   
   if (debugMode>=2){
@@ -1598,6 +1680,14 @@ static boolean getRainSensorStatus(void){
           writeDebugMessageToInternalLog((String)"[getRainSensorStatus]Analysis of the last 10 sensor values has been triggered...");
   }
 
+  if(ignoreRain==true){
+    if (debugMode>=2){
+          Serial.println((String)"[getRainSensorStatus]rain detection ignored as wished/selected via Admin site...");
+          writeDebugMessageToInternalLog((String)"[getRainSensorStatus]rain detection ignored as wished/selected via Admin site...");
+    }
+    return false;
+  }
+
   int amountOfPositiveRainValues = 0;
 
   for(int i=0;i<5;i++){
@@ -1622,7 +1712,8 @@ static boolean getRainSensorStatus(void){
 /**
  * formatFS - call this function if a resetting for the FS is needed
  * return: true if successful or false otherwise
- */
+ *
+*/
 
  static boolean formatFS (void){
 
@@ -1636,3 +1727,33 @@ static boolean getRainSensorStatus(void){
   SPIFFS.setConfig(filesystem_cfg);
   SPIFFS.begin(); //Restart the WEMOS to ensure a clean start of the file system - a direct restart at this point should work as well
  }
+
+ /**
+ * writeWebServerFiles - to save RAM all sites will be written during the setup mode to the flash memory and furthermore only streamed to clients without using the RAM
+ */
+
+// static void writeWebServerFiles(const char* file_, char * content , int length ){
+//  if (debugMode>=2){
+//          Serial.println("[writeWebServerFiles]writeWebServerFiles has been called...");
+//          writeDebugMessageToInternalLog((String)"[writeWebServerFiles]writeWebServerFiles has been called...");
+//  }
+//
+//  //open file at FileSystem
+//  File file = SPIFFS.open(file_,"w");
+//  
+//  if(!file){ //check if we have been able to open/create the file, if not abort
+//      if (debugMode>=1){
+//          Serial.println((String)"[writeWebServerFiles]"+ file_ +" file creation failed. Aborting...");
+//          writeDebugMessageToInternalLog((String)"[writeWebServerFiles]"+ file_ +" file creation failed. Aborting...");
+//      }
+//      return;   
+//  }
+//  //writing content to file
+//  file.write(content,length);
+//  file.close();
+//
+//  if (debugMode>=1){
+//          Serial.println((String)"[writeWebServerFiles]"+ file_ +" file created...");
+//          writeDebugMessageToInternalLog((String)"[writeWebServerFiles]"+ file_ +" file created...");
+//  }
+// }
