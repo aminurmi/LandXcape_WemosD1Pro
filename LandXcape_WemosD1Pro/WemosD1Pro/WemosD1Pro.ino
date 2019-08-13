@@ -21,11 +21,7 @@ int debugMode = 1; //0 = off, 1 = moderate debug messages, 2 = all debug message
 boolean onBoardLED = false; //(de)activates the usage of the onboard LED
 
 boolean NTPUpdateSuccessful = false;
-double version = 0.64700; //changes: Adaption: checkBatValues stabilizing, BugFix: Send robi home at sunset, Statistics: Waiting delay after rain to see when robi will start again with mowing is shown now (only during Weather status: raining...")
-//Bugfix: Rain detection together with the rain delay, Administration: Raining information can now be directly forwarded to the LandXcape motherboard to achieve original behaviour if wished/selected
-//Ignore rain: If set, robi will mow the lawn always and not care anymore if it rains or not, NTP Delay 1200, Statistics: Shows Heap information - free Heap size, Heap fragmentation, bigest free heap block
-//System: Status Led can now be switched on/off via the variable onBoardLED within the code
-//Memory Optimizations: All Websites have been made smaller by 20-40% by removing simply some 'space's'
+double version = 0.64701; //changes: 
 
 int lastReadingSec=0;
 int lastReadingMin=0;
@@ -197,7 +193,6 @@ void setup() {
   digitalWrite(OKAY,HIGH);
   digitalWrite(PWR,HIGH);
   digitalWrite(REGENSENSOR_LXC,HIGH);
-  digitalWrite(REGENSENSOR_WEMOS,HIGH);// no signal since it is originally an input which is switched off
 
   //prepare / init statistics
   A0reading = analogRead(BATVOLT);
@@ -782,7 +777,7 @@ static void handleAdministration(void){
         <p></p>\
         <form method='POST' action='/newAdminConfiguration'>\
         Battery history: Show <input type='number' name='batHistMinShown' value='%02d'  min=60 max=400> minutes<br>\
-        Activate function \"Go Home Early\" <input type='checkbox' name='goHomeEarly' %02s ><br>\
+        Activate function \"Go Home Early\" <input type='checkbox' name='goHomeEarly' %s ><br>\
         If activated, send LandXcape home at: <input type='number' name='batVol' value='%02d' min=16 max=20> V <input type='number' name='batMiliVolt' value='%03d' min=000 max=999>mV<br>\
         If not activated, this value is used to define the battery voltage <br> where no new round of mowing should be started before charging again.<br>\
         <br>\
