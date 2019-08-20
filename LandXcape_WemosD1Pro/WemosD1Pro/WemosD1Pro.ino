@@ -21,7 +21,8 @@ int debugMode = 1; //0 = off, 1 = moderate debug messages, 2 = all debug message
 boolean onBoardLED = false; //(de)activates the usage of the onboard LED
 
 boolean NTPUpdateSuccessful = false;
-double version = 0.64701; //changes: 
+double version = 0.64710; //changes: Statistics: Date is now shown as Europe-local default, BugFix: System - Sunrise/Sunset is now computed after time change to UTC and no longer before ;), 
+//
 
 int lastReadingSec=0;
 int lastReadingMin=0;
@@ -213,8 +214,9 @@ void setup() {
   
   dailyTasks = day(); //store the current day for the daily tasks
 
-  computeSunriseSunsetInformation(); //compute the new sunrise and sunset for today
   changeUTCtoLocalTime();//change time to local time
+  computeSunriseSunsetInformation(); //compute the new sunrise and sunset for today
+  
     
   if (debugMode>=1){
     Serial.println("[setup]finished...");
@@ -229,8 +231,8 @@ void loop() {
 
   if (NTPUpdateSuccessful==false){ //if syncing has failed do the doItOnceADay jobs again as well
     NTPUpdateSuccessful = syncTimeViaNTP();
-    computeSunriseSunsetInformation(); //compute the new sunrise and sunset for today
     changeUTCtoLocalTime();//change time to local time
+    computeSunriseSunsetInformation(); //compute the new sunrise and sunset for today
   }
 
   //update statistics every second
@@ -327,6 +329,10 @@ void loop() {
                handleGoHome(); //send Robi home
                showWebsite=true;
             }           
+              if (debugMode>=1 && raining == false){ //show rain detection within log file
+                      Serial.println((String)"[loop]Rain detected at:"+hour()+":"+minute()+":"+second());
+                      writeDebugMessageToInternalLog((String)"[loop]Rain detected at:"+hour()+":"+minute()+":"+second());
+              }
              raining = true;
              rainingDelay_ = rainingDelay;
 
@@ -335,7 +341,7 @@ void loop() {
                if (debugMode>=1){
                       Serial.println("[loop]Raining information has been forwarded to LandXcape as selected.");
                       writeDebugMessageToInternalLog("[loop]Raining information has been forwarded to LandXcape as selected.");
-              }
+               }
             }
              
         }else{
@@ -343,6 +349,12 @@ void loop() {
           if (raining == true && getRainSensorStatus()==false){
             rainingDelay_--; //subtracts 1 every minute
             if (rainingDelay_<=0){
+              
+              if (debugMode>=1 && raining == true){ //show rain gone detection within log file
+                      Serial.println((String)"[loop]Rain gone - "+rainingDelay+"min delay has passed without rain at:"+hour()+":"+minute()+":"+second());
+                      writeDebugMessageToInternalLog((String)"[loop]Rain gone - "+rainingDelay+"min delay has passed without rain at:"+hour()+":"+minute()+":"+second());
+              }
+              
               rainingDelay_=rainingDelay; //reset value
               raining = false; //Raining delay time has passed. Switch raining variable to false
             }
@@ -679,7 +691,7 @@ static void showStatistics(void){
           <p></p>\
           <p>Uptime: %02d days %02d hour %02d min %02d sec</p>\
           <p>Time: %02d:%02d:%02d</p>\
-          <p>Date: %02d:%02d:%02d</p>\
+          <p>Date: %02d.%02d.%02d</p>\
           <p>Computed sunrise approx: %s</p>\
           <p>Computed sunset approx: %s</p>\
           <p>HasCharged/isCharging: %s/%s   (OnTheWay)Home: (%s)%s</p>\
@@ -688,7 +700,7 @@ static void showStatistics(void){
           <br>\
           <table style='width:450px'>\
             <tr>\
-              <th><b>Battery:</b></th>\
+              <th>Battery:</th>\
             </tr>\
             <tr>\
               <th>Actual voltage: %02lf</th>\
@@ -696,7 +708,7 @@ static void showStatistics(void){
               <th>Highest voltage: %02lf</th>\
             </tr>\
             <tr>\
-              <th><b>Cell:</b></th>\
+              <th>Cell:</th>\
               <th></th>\
               <th></th>\
             </tr>\
@@ -1473,8 +1485,8 @@ boolean summertime_EU(int year, byte month, byte day, byte hour, byte tzHours)
     writeDebugMessageToInternalLog("[doItOnceADay]doItOnceADay has been triggered. Doing the daily work...");
   }
   NTPUpdateSuccessful = syncTimeViaNTP(); //resync time from the NTP just to ensure correctness
-  computeSunriseSunsetInformation(); //compute the new sunrise and sunset for today
   changeUTCtoLocalTime();//change time to local time
+  computeSunriseSunsetInformation(); //compute the new sunrise and sunset for today
  }
 
 /**
