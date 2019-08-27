@@ -21,7 +21,7 @@ int debugMode = 1; //0 = off, 1 = moderate debug messages, 2 = all debug message
 boolean onBoardLED = false; //(de)activates the usage of the onboard LED
 
 boolean NTPUpdateSuccessful = false;
-double version = 0.64710; //changes: Statistics: Date is now shown as Europe-local default, BugFix: System - Sunrise/Sunset is now computed after time change to UTC and no longer before ;), 
+double version = 0.64720; //changes: 
 //
 
 int lastReadingSec=0;
@@ -32,6 +32,8 @@ int PWRButtonPressTime = 1900; // in ms
 int switchBetweenPinsDelay = 2500; // in ms
 
 double A0reading = 0;
+double A1reading = 0;
+double A2reading = 0;
 double batteryVoltage = 0;
 double baseFor1V = 329.9479166;
 double faktorBat = 9.322916;
@@ -196,7 +198,12 @@ void setup() {
   digitalWrite(REGENSENSOR_LXC,HIGH);
 
   //prepare / init statistics
+  //create average of 3 readings to minimize jumping / noise
   A0reading = analogRead(BATVOLT);
+  A1reading = analogRead(BATVOLT);
+  A2reading = analogRead(BATVOLT);
+  A0reading = (A0reading+A1reading+A2reading)/3;
+  
   A0reading = A0reading / baseFor1V;
   batteryVoltage = A0reading * faktorBat;
 
@@ -250,8 +257,12 @@ void loop() {
     }
 
     double oldBatValue = batteryVoltage; //old value saved
-    //new value read in
-    A0reading = analogRead(BATVOLT); 
+    //create average of 3 readings to minimize jumping / noise
+    A0reading = analogRead(BATVOLT);
+    A1reading = analogRead(BATVOLT);
+    A2reading = analogRead(BATVOLT);
+    A0reading = (A0reading+A1reading+A2reading)/3;
+    
     A0reading = A0reading / baseFor1V;
     batteryVoltage = A0reading * faktorBat;
     
