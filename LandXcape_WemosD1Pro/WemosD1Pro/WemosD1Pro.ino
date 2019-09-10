@@ -8,9 +8,9 @@
  */
 #include <FS.h>
 #include <TimeLib.h>
-#include <WiFiUdp.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
+#include <WiFiUdp.h>
 
 //variables
 const char* ssid     = "Linux_2";
@@ -18,11 +18,11 @@ const char* password = "linuxrulezz";
 const int robiPinCode = 1881;
 int baudrate = 115200;
 int debugMode = 1; //0 = off, 1 = moderate debug messages, 2 = all debug messages
-boolean onBoardLED = false; //(de)activates the usage of the onboard LED
+boolean onBoardLED = true; //(de)activates the usage of the onboard LED
 
 boolean NTPUpdateSuccessful = false;
-double version = 0.64720; //changes: 
-//
+double version = 0.64720; //changes: BugFix-Windows releated: Changed the arrangement of the includes to satisfy Windows compile errors ;) Thank you Rene :)
+//rain sensor now alerts immediately
 
 int lastReadingSec=0;
 int lastReadingMin=0;
@@ -109,6 +109,7 @@ boolean timeAdjusted = false;
 //Filesystem variables
 const char* batGraph = "/data/BatGraph.svg";
 const char* adminSite = "/data/adminSite.html";
+const char* CSSFile = "/data/style.css";
 
 /**
  * Initialization process - setup ()
@@ -189,7 +190,7 @@ void setup() {
   pinMode(BATVOLT,INPUT); //Battery Voltage sensing via Analog Input
   pinMode(PWR,OUTPUT);
   pinMode(REGENSENSOR_LXC,OUTPUT);
-  pinMode(REGENSENSOR_WEMOS,OUTPUT); // will be switched on every 10 seconds
+  pinMode(REGENSENSOR_WEMOS,INPUT); // will be switched on every 10 seconds
   digitalWrite(STOP,HIGH);
   digitalWrite(START,HIGH);
   digitalWrite(HOME,HIGH);
@@ -247,13 +248,10 @@ void loop() {
 
     //since the digital input are producing a lot of noise from the detector board we reduce the readings to every 10 seconds like on the LandXcape board as well and switch the digital input offline in the mean time
     if (second()%10==5){ //read every 5th second -> :05,:15,:25...
-        pinMode(REGENSENSOR_WEMOS,INPUT);//switch on the input mode
         delay(100);
         rainSensorCounter = rainSensorCounter%10;
         rainSensorResults[rainSensorCounter] = digitalRead(REGENSENSOR_WEMOS);
         rainSensorCounter++;
-        pinMode(REGENSENSOR_WEMOS,OUTPUT); //switch off the input mode
-        digitalWrite(REGENSENSOR_LXC,HIGH); //no signal to the rain sensor board ;)
     }
 
     double oldBatValue = batteryVoltage; //old value saved
@@ -1708,11 +1706,11 @@ static boolean getRainSensorStatus(void){
 
   int amountOfPositiveRainValues = 0;
 
-  for(int i=0;i<5;i++){
+  for(int i=0;i<10;i++){
     amountOfPositiveRainValues= amountOfPositiveRainValues + rainSensorResults[i];
   }
 
-  if (amountOfPositiveRainValues<=2){
+  if (amountOfPositiveRainValues<=1){
     if (debugMode>=2){
             Serial.println((String)"[getRainSensorStatus]Result: It Rains - "+amountOfPositiveRainValues);
             writeDebugMessageToInternalLog((String)"[getRainSensorStatus]Result: It Rains - "+amountOfPositiveRainValues);
@@ -1735,7 +1733,7 @@ static boolean getRainSensorStatus(void){
 
  static boolean formatFS (void){
 
-  return SPIFFS.format();
+  SPIFFS.format();
 
   //Restart the WEMOS-FileSystem to ensure a clean start of the file system - a direct restart of the Wemos at this point should work as well
   SPIFFS.end();
@@ -1744,6 +1742,8 @@ static boolean getRainSensorStatus(void){
   filesystem_cfg.setAutoFormat(false);
   SPIFFS.setConfig(filesystem_cfg);
   SPIFFS.begin(); //Restart the WEMOS to ensure a clean start of the file system - a direct restart at this point should work as well
+
+  return true;
  }
 
  /**
