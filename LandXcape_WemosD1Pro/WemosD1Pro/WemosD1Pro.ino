@@ -1451,10 +1451,11 @@ static void computeSunriseSunsetInformation(void){
   sunrise = (average_sunrise+(diff_sunrise/2)*cos((day_+8)/58.09));
   sunset = (average_sunset-(diff_sunset/2)*cos((day_+8)/58.09));
 
+
   //Sumertime-correction if necessary
   if(SummerTimeActive==false){
     sunrise=sunrise-60;//reduce 60min 
-    sunrise=sunset-60;//reduce 60min 
+    sunset=sunset-60;//reduce 60min 
   }
 
   if (debugMode>=1){
