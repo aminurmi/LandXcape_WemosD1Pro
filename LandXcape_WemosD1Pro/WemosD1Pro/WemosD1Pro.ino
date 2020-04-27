@@ -21,7 +21,7 @@ int debugMode = 1; //0 = off, 1 = moderate debug messages, 2 = all debug message
 boolean onBoardLED = true; //(de)activates the usage of the onboard LED
 
 boolean NTPUpdateSuccessful = false;
-double version = 0.65002; //GUI: Adapted the statistics picture as well to show the full 600 entries ;)
+double version = 0.65200; //Battery sensing optimized: Now the "best" value out of 10 sensor values is taken -> see https://github.com/esp8266/Arduino/issues/2070, System: Updated to ESP 2.6.3 version for the .bin file
 
 int lastReadingSec=0;
 int lastReadingMin=0;
@@ -32,7 +32,6 @@ int switchBetweenPinsDelay = 2500; // in ms
 
 double A0reading = 0;
 double A1reading = 0;
-double A2reading = 0;
 double batteryVoltage = 0;
 double baseFor1V = 329.9479166;
 double faktorBat = 9.322916;
@@ -198,11 +197,17 @@ void setup() {
   digitalWrite(REGENSENSOR_LXC,HIGH);
 
   //prepare / init statistics
-  //create average of 3 readings to minimize jumping / noise
+  //take smalest one of 10 readings to minimize jumping / noise -> WLAN is maybe the main coarse -> https://github.com/esp8266/Arduino/issues/2070
   A0reading = analogRead(BATVOLT);
-  A1reading = analogRead(BATVOLT);
-  A2reading = analogRead(BATVOLT);
-  A0reading = (A0reading+A1reading+A2reading)/3;
+  for (int i=0;i<10;i++){
+    A1reading = analogRead(BATVOLT);
+    if (A1reading < A0reading){
+      A0reading = A1reading;
+    }
+  }
+ if (debugMode>=1){
+    Serial.println(A0reading);
+  }
   
   A0reading = A0reading / baseFor1V;
   batteryVoltage = A0reading * faktorBat;
@@ -254,22 +259,29 @@ void loop() {
     }
 
     double oldBatValue = batteryVoltage; //old value saved
-    //create average of 3 readings to minimize jumping / noise
+    //take smalest one of 10 readings to minimize jumping / noise -> WLAN is maybe the main coarse -> https://github.com/esp8266/Arduino/issues/2070
     A0reading = analogRead(BATVOLT);
-    A1reading = analogRead(BATVOLT);
-    A2reading = analogRead(BATVOLT);
-    A0reading = (A0reading+A1reading+A2reading)/3;
+    for (int i=0;i<10;i++){
+      A1reading = analogRead(BATVOLT);
+      if (A1reading < A0reading){
+        A0reading = A1reading;
+      }
+    }
     
     A0reading = A0reading / baseFor1V;
     batteryVoltage = A0reading * faktorBat;
     
       if (oldBatValue != batteryVoltage) { //compute only if the reading has changed
         if (batteryVoltage > highestBatVoltage){
-          //create average of 3 readings to minimize jumping / noise
+          //take smalest one of 10 readings to minimize jumping / noise -> WLAN is maybe the main coarse -> https://github.com/esp8266/Arduino/issues/2070
           A0reading = analogRead(BATVOLT);
-          A1reading = analogRead(BATVOLT);
-          A2reading = analogRead(BATVOLT);
-          A0reading = (A0reading+A1reading+A2reading)/3;
+          for (int i=0;i<10;i++){
+            A1reading = analogRead(BATVOLT);
+            if (A1reading < A0reading){
+              A0reading = A1reading;
+            }
+          }
+
           double batteryVoltage_sense2 = A0reading * faktorBat;
           if (batteryVoltage_sense2 > highestBatVoltage){
             highestBatVoltage = batteryVoltage;
@@ -277,11 +289,15 @@ void loop() {
           }
         }
         if (batteryVoltage < lowestBatVoltage){
-          //create average of 3 readings to minimize jumping / noise
+          //take smalest one of 10 readings to minimize jumping / noise -> WLAN is maybe the main coarse -> https://github.com/esp8266/Arduino/issues/2070
           A0reading = analogRead(BATVOLT);
-          A1reading = analogRead(BATVOLT);
-          A2reading = analogRead(BATVOLT);
-          A0reading = (A0reading+A1reading+A2reading)/3;
+          for (int i=0;i<10;i++){
+            A1reading = analogRead(BATVOLT);
+            if (A1reading < A0reading){
+              A0reading = A1reading;
+            }
+          }
+
           double lowestVoltage_sense2 = A0reading * faktorBat;
           if (batteryVoltage < lowestVoltage_sense2){
             lowestBatVoltage = batteryVoltage;
@@ -1295,7 +1311,7 @@ static void handleWebUpdateHelperFunction (void){
 }
 
 /**
- * batterVoltageHistory helper function to store battery values (max 400 entries <->maxBatHistValues)
+ * batterVoltageHistory helper function to store battery values (max 600 entries <->maxBatHistValues)
  */
 
 static void storeBatVoltHistory (double actualBatVolt){
