@@ -21,8 +21,7 @@ int debugMode = 1; //0 = off, 1 = moderate debug messages, 2 = all debug message
 boolean onBoardLED = true; //(de)activates the usage of the onboard LED
 
 boolean NTPUpdateSuccessful = false;
-double version = 0.65001; //changes: 2020 version ;) System: Battery history length prolonged to max. 600min,max/min battery voltage 2nd measurement before taking into account, slightly faster Button commands (500ms per Button pressing time), 
-//changes: 
+double version = 0.65002; //GUI: Adapted the statistics picture as well to show the full 600 entries ;)
 
 int lastReadingSec=0;
 int lastReadingMin=0;
@@ -1360,8 +1359,8 @@ void computeGraphBasedOnBatValues(void) {
   char temp[100];
   char svgBatHistGraph[230];
   snprintf(svgBatHistGraph, 230,
-    "<svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.1\" width=\"400\" height=\"155\">\
-    <rect width=\"400\" height=\"155\" fill=\"rgb(250, 230, 210)\" stroke-width=\"1\" stroke=\"rgb(0, 0, 0)\" />\
+    "<svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.1\" width=\"600\" height=\"155\">\
+    <rect width=\"600\" height=\"155\" fill=\"rgb(250, 230, 210)\" stroke-width=\"1\" stroke=\"rgb(0, 0, 0)\" />\
     <g stroke=\"black\">");
 
   //write initial part of the SVG
