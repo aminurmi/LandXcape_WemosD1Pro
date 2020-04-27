@@ -18,10 +18,10 @@ const char* password = "linuxrulezz";
 const int robiPinCode = 1881;
 int baudrate = 115200;
 int debugMode = 1; //0 = off, 1 = moderate debug messages, 2 = all debug messages
-boolean onBoardLED = true; //(de)activates the usage of the onboard LED
+boolean onBoardLED = false; //(de)activates the usage of the onboard LED
 
 boolean NTPUpdateSuccessful = false;
-double version = 0.65211; //Battery sensing: final stabilization via different test runs for several minutes: seems now to be finally stable as whished :D
+double version = 0.65300; //System: Battery Voltage factor corrected through resensing with a voltmeter - now more precise
 
 int lastReadingSec=0;
 int lastReadingMin=0;
@@ -33,8 +33,9 @@ int switchBetweenPinsDelay = 2500; // in ms
 double A0reading = 0;
 double A1reading = 0;
 double batteryVoltage = 0;
-double baseFor1V = 329.9479166;
-double faktorBat = 9.322916;
+//double baseFor1V = 329.9479166;
+//double faktorBat = 9.322916;
+double batteryVoltFactor = 0.0285119047619;
 
 double lowestBatVoltage = 0;
 double highestBatVoltage = 0;
@@ -207,8 +208,9 @@ void setup() {
     }
   }
   
-  A0reading = A0reading / baseFor1V;
-  batteryVoltage = A0reading * faktorBat;
+  //A0reading = A0reading / baseFor1V;
+  //batteryVoltage = A0reading * faktorBat;
+  batteryVoltage = A0reading * batteryVoltFactor;
 
   lowestBatVoltage = batteryVoltage;
   highestBatVoltage = batteryVoltage;
@@ -269,25 +271,24 @@ void loop() {
     if (debugMode>=2){
       Serial.print("A0: ");
       Serial.println(A0reading);
+      writeDebugMessageToInternalLog((String)"[System]Pwr-Reading:"+A0reading);
     }
+   
     
-    A0reading = A0reading / baseFor1V;
-    batteryVoltage = A0reading * faktorBat;
+  //A0reading = A0reading / baseFor1V;
+  //batteryVoltage = A0reading * faktorBat;
+  batteryVoltage = A0reading * batteryVoltFactor;
     
       if (oldBatValue != batteryVoltage) { //compute only if the reading has changed
         if (batteryVoltage > highestBatVoltage){
-          double batteryVoltage_sense2 = A0reading * faktorBat;
-          if (batteryVoltage_sense2 > highestBatVoltage){
             highestBatVoltage = batteryVoltage;
             highestCellVoltage = batteryVoltage/5;
-          }
+          
         }
         if (batteryVoltage < lowestBatVoltage){
-          double lowestVoltage_sense2 = A0reading * faktorBat;
-          if (batteryVoltage < lowestVoltage_sense2){
             lowestBatVoltage = batteryVoltage;
             lowestCellVoltage = batteryVoltage/5;
-          }
+          
         }
       }
 
@@ -436,8 +437,9 @@ static void handleRoot(void){
 
   //Battery Voltage computing
   A0reading = analogRead(BATVOLT);
-  A0reading = A0reading / baseFor1V;
-  batteryVoltage = A0reading * faktorBat;
+  //A0reading = A0reading / baseFor1V;
+  //batteryVoltage = A0reading * faktorBat;
+  batteryVoltage = A0reading * batteryVoltFactor;
   
   snprintf(temp, 1250,
      "<html>\
