@@ -21,14 +21,14 @@ int debugMode = 1; //0 = off, 1 = moderate debug messages, 2 = all debug message
 boolean onBoardLED = true; //(de)activates the usage of the onboard LED
 
 boolean NTPUpdateSuccessful = false;
-double version = 0.64720; //changes: BugFix-Windows releated: Changed the arrangement of the includes to satisfy Windows compile errors ;) Thank you Rene :)
-//rain sensor now alerts immediately
+double version = 0.65001; //changes: 2020 version ;) System: Battery history length prolonged to max. 600min,max/min battery voltage 2nd measurement before taking into account, slightly faster Button commands (500ms per Button pressing time), 
+//changes: 
 
 int lastReadingSec=0;
 int lastReadingMin=0;
 
-int buttonPressTime = 600; //in ms
-int PWRButtonPressTime = 1900; // in ms
+int buttonPressTime = 500; //in ms
+int PWRButtonPressTime = 1700; // in ms
 int switchBetweenPinsDelay = 2500; // in ms
 
 double A0reading = 0;
@@ -43,7 +43,7 @@ double highestBatVoltage = 0;
 double lowestCellVoltage = 0;
 double highestCellVoltage = 0;
 
-double batterVoltageHistory [400];
+double batterVoltageHistory [600];
 int batVoltHistCounter = 0;
 
 boolean robiAtHome = false;
@@ -61,7 +61,7 @@ int rainSensorCounter = 0;
 
 //admin variables
 int lastXXminBatHist = 100;
-const int maxBatHistValues = 400; // represents the max width of the statistic svg's
+const int maxBatHistValues = 600; // represents the max width of the statistic svg's
 boolean earlyGoHome = false;
 double earlyGoHomeVolt = 17.0;
 boolean forwardRainInfoToLandXcape = false;
@@ -266,12 +266,28 @@ void loop() {
     
       if (oldBatValue != batteryVoltage) { //compute only if the reading has changed
         if (batteryVoltage > highestBatVoltage){
-          highestBatVoltage = batteryVoltage;
-          highestCellVoltage = batteryVoltage/5;
+          //create average of 3 readings to minimize jumping / noise
+          A0reading = analogRead(BATVOLT);
+          A1reading = analogRead(BATVOLT);
+          A2reading = analogRead(BATVOLT);
+          A0reading = (A0reading+A1reading+A2reading)/3;
+          double batteryVoltage_sense2 = A0reading * faktorBat;
+          if (batteryVoltage_sense2 > highestBatVoltage){
+            highestBatVoltage = batteryVoltage;
+            highestCellVoltage = batteryVoltage/5;
+          }
         }
         if (batteryVoltage < lowestBatVoltage){
-          lowestBatVoltage = batteryVoltage;
-          lowestCellVoltage = batteryVoltage/5;
+          //create average of 3 readings to minimize jumping / noise
+          A0reading = analogRead(BATVOLT);
+          A1reading = analogRead(BATVOLT);
+          A2reading = analogRead(BATVOLT);
+          A0reading = (A0reading+A1reading+A2reading)/3;
+          double lowestVoltage_sense2 = A0reading * faktorBat;
+          if (batteryVoltage < lowestVoltage_sense2){
+            lowestBatVoltage = batteryVoltage;
+            lowestCellVoltage = batteryVoltage/5;
+          }
         }
       }
 
@@ -797,7 +813,7 @@ static void handleAdministration(void){
         <h1>LandXcape Administration Site</h1>\
         <p></p>\
         <form method='POST' action='/newAdminConfiguration'>\
-        Battery history: Show <input type='number' name='batHistMinShown' value='%02d'  min=60 max=400> minutes<br>\
+        Battery history: Show <input type='number' name='batHistMinShown' value='%02d'  min=60 max=600> minutes<br>\
         Activate function \"Go Home Early\" <input type='checkbox' name='goHomeEarly' %s ><br>\
         If activated, send LandXcape home at: <input type='number' name='batVol' value='%02d' min=16 max=20> V <input type='number' name='batMiliVolt' value='%03d' min=000 max=999>mV<br>\
         If not activated, this value is used to define the battery voltage <br> where no new round of mowing should be started before charging again.<br>\
@@ -852,7 +868,7 @@ static void computeNewAdminConfig(void){
 
     //compute given values
     int batHistMinShown_ = wwwserver.arg("batHistMinShown").toInt();
-    if (batHistMinShown_ >= 60 && batHistMinShown_ <=400){ //set it only if its valid
+    if (batHistMinShown_ >= 60 && batHistMinShown_ <=600){ //set it only if its valid
        lastXXminBatHist = batHistMinShown_;     
     }
 
@@ -1450,7 +1466,6 @@ static void computeSunriseSunsetInformation(void){
 
   sunrise = (average_sunrise+(diff_sunrise/2)*cos((day_+8)/58.09));
   sunset = (average_sunset-(diff_sunset/2)*cos((day_+8)/58.09));
-
 
   //Sumertime-correction if necessary
   if(SummerTimeActive==false){
