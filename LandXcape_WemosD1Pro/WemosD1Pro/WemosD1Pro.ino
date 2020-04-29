@@ -21,7 +21,8 @@ int debugMode = 1; //0 = off, 1 = moderate debug messages, 2 = all debug message
 boolean onBoardLED = false; //(de)activates the usage of the onboard LED
 
 boolean NTPUpdateSuccessful = false;
-double version = 0.65300; //System: Battery Voltage factor corrected through resensing with a voltmeter - now more precise
+double version = 0.66012; //System: Battery Voltage meassurement slow dow -> measurement is now only every 5 seconds done, 
+//System: WLAN status check implemented -> checks connection to DHCP Server every 30 seconds, if no longer available, disconnects and reconnects actively
 
 int lastReadingSec=0;
 int lastReadingMin=0;
@@ -33,8 +34,6 @@ int switchBetweenPinsDelay = 2500; // in ms
 double A0reading = 0;
 double A1reading = 0;
 double batteryVoltage = 0;
-//double baseFor1V = 329.9479166;
-//double faktorBat = 9.322916;
 double batteryVoltFactor = 0.0285119047619;
 
 double lowestBatVoltage = 0;
@@ -144,8 +143,8 @@ void setup() {
   WiFi.begin(ssid, password);
 
   while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    if (debugMode>=1){
+    delay(2000);
+    if (debugMode>=2){
       Serial.println((String)"[setup]"+"WiFi Status Code:"+WiFi.status());
       writeDebugMessageToInternalLog((String)"[setup]"+"WiFi Status Code:"+WiFi.status());
     }
@@ -198,18 +197,15 @@ void setup() {
   digitalWrite(REGENSENSOR_LXC,HIGH);
 
   //prepare / init statistics
-  //take smalest one of 10 readings to minimize jumping / noise -> WLAN is maybe the main coarse -> https://github.com/esp8266/Arduino/issues/2070
+  //take smalest one of 20 readings to minimize jumping / noise -> WLAN is maybe the main coarse -> https://github.com/esp8266/Arduino/issues/2070
   A0reading = analogRead(BATVOLT);
-  for (int i=0;i<10;i++){
-    delay(10);
+  for (int i=0;i<20;i++){
     A1reading = analogRead(BATVOLT);
     if (A1reading < A0reading){
       A0reading = A1reading;
     }
   }
-  
-  //A0reading = A0reading / baseFor1V;
-  //batteryVoltage = A0reading * faktorBat;
+
   batteryVoltage = A0reading * batteryVoltFactor;
 
   lowestBatVoltage = batteryVoltage;
@@ -251,47 +247,45 @@ void loop() {
   if (lastReadingSec!=second()){
 
     //since the digital input are producing a lot of noise from the detector board we reduce the readings to every 10 seconds like on the LandXcape board as well and switch the digital input offline in the mean time
-    if (second()%10==5){ //read every 5th second -> :05,:15,:25...
+    if (second()%5==0){ //read every 5th second -> :05,:15,:25...
         delay(100);
         rainSensorCounter = rainSensorCounter%10;
         rainSensorResults[rainSensorCounter] = digitalRead(REGENSENSOR_WEMOS);
         rainSensorCounter++;
     }
 
-    double oldBatValue = batteryVoltage; //old value saved
-    //take smalest one of 10 readings to minimize jumping / noise -> WLAN is maybe the main coarse -> https://github.com/esp8266/Arduino/issues/2070
-    A0reading = analogRead(BATVOLT);
-    for (int i=0;i<100;i++){
-      A1reading = analogRead(BATVOLT);
-      delay(1);
-      if (A1reading < A0reading){
-        A0reading = A1reading;
+    if(second()%5==0){ //read every 5th second -> :05,:15,:25...
+      double oldBatValue = batteryVoltage; //old value saved
+      //take smalest one of 100 readings to minimize jumping / noise -> WLAN is maybe the main coarse -> https://github.com/esp8266/Arduino/issues/2070
+      A0reading = analogRead(BATVOLT);
+      for (int i=0;i<100;i++){
+        A1reading = analogRead(BATVOLT);
+        delay(1);
+        if (A1reading < A0reading){
+          A0reading = A1reading;
+        }
       }
-    }
-    if (debugMode>=2){
-      Serial.print("A0: ");
-      Serial.println(A0reading);
-      writeDebugMessageToInternalLog((String)"[System]Pwr-Reading:"+A0reading);
-    }
+      if (debugMode>=2){
+        Serial.print("A0: ");
+        Serial.println(A0reading);
+        writeDebugMessageToInternalLog((String)"[System]Pwr-Reading:"+A0reading);
+      }
    
-    
-  //A0reading = A0reading / baseFor1V;
-  //batteryVoltage = A0reading * faktorBat;
-  batteryVoltage = A0reading * batteryVoltFactor;
-    
-      if (oldBatValue != batteryVoltage) { //compute only if the reading has changed
-        if (batteryVoltage > highestBatVoltage){
-            highestBatVoltage = batteryVoltage;
-            highestCellVoltage = batteryVoltage/5;
-          
+        batteryVoltage = A0reading * batteryVoltFactor;
+      
+        if (oldBatValue != batteryVoltage) { //compute only if the reading has changed
+          if (batteryVoltage > highestBatVoltage){
+              highestBatVoltage = batteryVoltage;
+              highestCellVoltage = batteryVoltage/5;
+            
+          }
+          if (batteryVoltage < lowestBatVoltage){
+              lowestBatVoltage = batteryVoltage;
+              lowestCellVoltage = batteryVoltage/5;
+            
+          }
         }
-        if (batteryVoltage < lowestBatVoltage){
-            lowestBatVoltage = batteryVoltage;
-            lowestCellVoltage = batteryVoltage/5;
-          
-        }
-      }
-
+     }
       //every minute jobs
       if (lastReadingMin!=minute()){
         //store battery values every minute
@@ -413,11 +407,51 @@ void loop() {
      lastReadingSec = second();
   }
 
+  //check if the WLAN is still good every 30 seconds
+  if(second()%30==0 ){
+    if (checkWLANisGood() != true){
+     if (debugMode>=1){
+      Serial.println((String)"[loop] WLAN connection lost... reconnecting...");
+      writeDebugMessageToInternalLog((String)"[loop] WLAN connection lost... reconnecting...");
+     }
+      reconnectWLAN();
+    }
+   }
   //check if a new day as started
   if (dailyTasks!=day()){ //and if so then do the daily housework
     doItOnceADay();
     dailyTasks=day();//store today as new dailyTasks day
   }
+}
+
+static boolean checkWLANisGood(){
+
+  if (WiFi.status() != WL_CONNECTED){
+    return false;
+  }else{
+    return true;
+  }
+}
+
+static void reconnectWLAN(){
+
+  //WiFi Connection
+  if (debugMode>=1){
+    Serial.println((String)"[setup]"+connectTo + ssid);
+    writeDebugMessageToInternalLog((String)"[setup]"+connectTo + ssid);
+  }
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    if (debugMode>=1){
+      Serial.println((String)"[setup]"+"WiFi Status Code:"+WiFi.status());
+      writeDebugMessageToInternalLog((String)"[setup]"+"WiFi Status Code:"+WiFi.status());
+    }
+  }
+  
 }
 
 static void handleRoot(void){
