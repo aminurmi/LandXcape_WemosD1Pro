@@ -21,8 +21,8 @@ int debugMode = 1; //0 = off, 1 = moderate debug messages, 2 = all debug message
 boolean onBoardLED = false; //(de)activates the usage of the onboard LED
 
 boolean NTPUpdateSuccessful = false;
-double version = 0.66012; //System: Battery Voltage meassurement slow dow -> measurement is now only every 5 seconds done, 
-//System: WLAN status check implemented -> checks connection to DHCP Server every 30 seconds, if no longer available, disconnects and reconnects actively
+double version = 0.67000; //System: Reduced Log Entries during reconnect session and added time stamp, 
+//System: From time to time mowing implemented, Function deactives mowing from sunrise to sunset if set. LogFiles reduced to 122digits per line and to max 45 entries to reduce memory consumption a bit (~1kb less now)
 
 int lastReadingSec=0;
 int lastReadingMin=0;
@@ -66,9 +66,16 @@ boolean forwardRainInfoToLandXcape = false;
 boolean ignoreRain = false;
 int dailyTasks = -1;
 boolean allDayMowing = false; //lawn mowing from sunrise to sunset
+boolean fromToMowing = false; //activates the from time to time mowing function
+int fromStartTimeHour = 0;
+int fromStartTimeMin = 0;
+int toEndTimeHour = 0;
+int toEndTimeMin = 0;
+int fromToEndTime = -1;
+int fromToStartTime = -1;
 const int maxLogEntries = 50;
-const int maxLogLength = 130;
-char logRotateBuffer [maxLogEntries][maxLogLength]; // 130*50*1byte je character = ~6.5kb (max) size
+const int maxLogLength = 110;
+char logRotateBuffer [maxLogEntries][maxLogLength]; // 122*45*1byte je character = ~5.5kb (max) size
 int logRotateCounter = 0; 
 
 int STOP = D1;
@@ -319,7 +326,19 @@ void loop() {
                     writeDebugMessageToInternalLog((String)"[loop]Sunrise to Sunset mowing deactived because sunrise>=currentTimeInMin <=sunset"+sunrise+"<="+currentTimeInMin+"sunset>="+sunset);
             }
           }
-        }  
+        }
+
+        //check is "Mowing from time to time" is activated and if yes trigger mowing if we are not charging, it is not raining, allDayMowing is deactivated and we are at home
+        if(fromToMowing==true && robiAtHome==true && hasCharged == true && isCharging==false && raining == false && allDayMowing == false){
+            if (debugMode>=1){
+              Serial.println((String)"[loop]Mowing from Starttime("+fromStartTimeHour+":"+fromStartTimeMin+") to Endtime("+toEndTimeHour+":"+toEndTimeMin+") - start next round at local time:"+hour()+":"+minute()+":"+second());
+              writeDebugMessageToInternalLog((String)"[loop]Mowing from Starttime("+fromStartTimeHour+":"+fromStartTimeMin+") to Endtime("+toEndTimeHour+":"+toEndTimeMin+") - start next round at local time:"+hour()+":"+minute()+":"+second());
+            } 
+            showWebsite=false;
+            handleStartMowing(); //start mowing; boolean variables will be set within this function
+            showWebsite=true;
+        }
+          
         //check if it is time to bring robi home if allDayMowing is active only!
         int currentTimeInMin = hour()*60+minute();
         
@@ -335,7 +354,20 @@ void loop() {
                     writeDebugMessageToInternalLog((String)"[loop]Sunset detected and allDayMowing active... Sending Robi home to base...");
             }
         }
-        
+
+        //check if it is time to bring robi home if fromToMowing is active only!
+        if (allDayMowing==false && fromToMowing==true && robiAtHome==false && robiOnTheWayHome == false && (currentTimeInMin > fromToEndTime || currentTimeInMin < fromToStartTime)){ 
+          
+          showWebsite=false;
+          handleStopMowing();
+          handleGoHome();
+          showWebsite=true;
+
+          if (debugMode>=1){
+                    Serial.println((String)"[loop]Mowing outside the presented times detected... Sending Robi home to base...");
+                    writeDebugMessageToInternalLog((String)"[loop]Mowing outside the presented times detected... Sending Robi home to base...");
+            }
+        }
         //check for rain
         if (getRainSensorStatus()){ //if true then rain has been detected -> send robi home
             
@@ -444,14 +476,16 @@ static void reconnectWLAN(){
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
 
+  int WiFistatus = -1;
+
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
-    if (debugMode>=1){
-      Serial.println((String)"[setup]"+"WiFi Status Code:"+WiFi.status());
-      writeDebugMessageToInternalLog((String)"[setup]"+"WiFi Status Code:"+WiFi.status());
+    if (debugMode>=1 && WiFistatus != WiFi.status()){
+      Serial.println((String)"[setup]"+"WiFi Status Code:"+WiFi.status()+" at local time:"+hour()+":"+minute()+":"+second()+" " + year());
+      writeDebugMessageToInternalLog((String)"[setup]"+"WiFi Status Code:"+WiFi.status()+" at local time:"+hour()+":"+minute()+":"+second()+" " + year());
+      WiFistatus = WiFi.status();
     }
   }
-  
 }
 
 static void handleRoot(void){
@@ -824,6 +858,10 @@ static void handleAdministration(void){
     char allDayMowingCheckBoxValue [] = "unchecked";
     if (allDayMowing==true){
       strncpy(allDayMowingCheckBoxValue, "checked  ",sizeof(allDayMowingCheckBoxValue));
+    }
+    char fromToMowingCheckBoxValue [] = "unchecked";
+    if (fromToMowing==true){
+      strncpy(fromToMowingCheckBoxValue, "checked  ",sizeof(fromToMowingCheckBoxValue));
     }   
 
     char forwardRainInfoValue [] = "unchecked";
@@ -836,8 +874,8 @@ static void handleAdministration(void){
       strncpy(ignoreRainValue, "checked  ",sizeof(ignoreRainValue));
     } 
 
-    char temp[2300];
-    snprintf(temp, 2300,
+    char temp[2500];
+    snprintf(temp, 2500,
      "<html>\
      <head>\
      <title>LandXcape</title>\
@@ -855,6 +893,9 @@ static void handleAdministration(void){
         If not activated, this value is used to define the battery voltage <br> where no new round of mowing should be started before charging again.<br>\
         <br>\
         Activate function \"Mowing from sunrise to sunset\" <input type='checkbox' name='allDayMowing_' %s ><br>\
+        <br>\
+        Activate function \"Mowing from <input type='time' name='startTime' value='%02d:%02d'> to <input type='time' name='endTime' value='%02d:%02d'> \" <input type='checkbox' name='fromToMowing_' %s ><br>\
+        This function deactivates \"Mowing from sunrise to sunset\" if set.<br>\
         <br>\
         Forward rain information to LandXcape to trigger original behavior <input type='checkbox' name='forwardRainInfo_' %s ><br>\
         <br>\
@@ -877,7 +918,7 @@ static void handleAdministration(void){
           </tr>\
         </table>\
       </body>\
-    </html>",lastXXminBatHist,earlyGoHomeCheckBoxValue,earlyGoHomeVolt_,earlyGoHome_mVolt_,allDayMowingCheckBoxValue,forwardRainInfoValue,ignoreRainValue
+    </html>",lastXXminBatHist,earlyGoHomeCheckBoxValue,earlyGoHomeVolt_,earlyGoHome_mVolt_,allDayMowingCheckBoxValue,fromStartTimeHour,fromStartTimeMin,toEndTimeHour,toEndTimeMin,fromToMowingCheckBoxValue,forwardRainInfoValue,ignoreRainValue
       );
 
       wwwserver.send(200, "text/html", temp);        
@@ -914,13 +955,33 @@ static void computeNewAdminConfig(void){
     earlyGoHomeVolt = (double)batVolt+(double) batMiliVolt/1000;
 
     allDayMowing = (boolean)wwwserver.hasArg("allDayMowing_");
+    fromToMowing = (boolean)wwwserver.hasArg("fromToMowing_");
+    if(fromToMowing==true){
+      //try to get the start and end time and check if correct/valid
+      fromStartTimeHour = wwwserver.arg("startTime").substring(0,2).toInt();
+      fromStartTimeMin = wwwserver.arg("startTime").substring(3,5).toInt();
+      toEndTimeHour = wwwserver.arg("endTime").substring(0,2).toInt();
+      toEndTimeMin = wwwserver.arg("endTime").substring(3,5).toInt();
+
+      fromToEndTime = toEndTimeHour*60+toEndTimeMin;
+      fromToStartTime = fromStartTimeHour*60+fromStartTimeMin;
+      
+      if (toEndTimeHour<=fromStartTimeHour || (toEndTimeHour==fromStartTimeHour && toEndTimeMin<=fromStartTimeMin)){
+        Serial.println((String)"[computeNewAdminConfig]MowingFromTo: Endtime("+toEndTimeHour+":"+toEndTimeMin+") before Starttime("+fromStartTimeHour+":"+fromStartTimeMin+") or invalid, therfore ignoring.");
+        writeDebugMessageToInternalLog((String)"[computeNewAdminConfig]MowingFromTo: Endtime before Starttime or invalid, therfore ignoring.");
+        fromToMowing=false;
+      }else{
+        //deactivate allDayMowing if it has been set as well
+        allDayMowing = false; //deactivated as declared in the Administration site
+      }
+    }
     forwardRainInfoToLandXcape = (boolean)wwwserver.hasArg("forwardRainInfo_");
     ignoreRain = (boolean)wwwserver.hasArg("ignoreRain_");
 
     boolean formatFlashStorage = (boolean)wwwserver.hasArg("formatFlashStorage");
     
-    char temp[820];
-    snprintf(temp, 820,
+    char temp[880];
+    snprintf(temp, 880,
      "<html>\
       <head>\
         <title>LandXcape</title>\
@@ -938,10 +999,11 @@ static void computeNewAdminConfig(void){
           <p>ForwardRainInfoToLandXcape Function: %d</p>\
           <p>Ignore rain Function: %d</p>\
           <p>Mow from sunrise to Sunset Function: %d</p>\
+          <p>Mow from %d:%d to %d:%d Function: %d</p>\
           <p>Flash Storage will be formated: %d</p>\
       </body>\
     </html>",
-    hour(),minute(),second(),lastXXminBatHist,earlyGoHome,earlyGoHomeVolt,forwardRainInfoToLandXcape,ignoreRain,allDayMowing,formatFlashStorage
+    hour(),minute(),second(),lastXXminBatHist,earlyGoHome,earlyGoHomeVolt,forwardRainInfoToLandXcape,ignoreRain,allDayMowing,fromStartTimeHour,fromStartTimeMin,toEndTimeHour,toEndTimeMin,fromToMowing,formatFlashStorage
     );
     wwwserver.send(200, "text/html", temp);
 
@@ -964,6 +1026,8 @@ static void computeNewAdminConfig(void){
       writeDebugMessageToInternalLog((String)"[computeNewAdminConfig]Ignore rain Function:"+ignoreRain);
       Serial.println((String)"[computeNewAdminConfig]Mow from sunrise to Sunset Function:"+allDayMowing);
       writeDebugMessageToInternalLog((String)"[computeNewAdminConfig]Mow from sunrise to Sunset Function:"+allDayMowing);
+      Serial.println((String)"[computeNewAdminConfig]From Starttime("+fromStartTimeHour+":"+fromStartTimeMin+") to Endtime("+toEndTimeHour+":"+toEndTimeMin+") function activated:"+fromToMowing);
+      writeDebugMessageToInternalLog((String)"[computeNewAdminConfig]Endtime before Starttime or invalid, therfore ignoring.");
       Serial.println((String)"[computeNewAdminConfig]Flash storage shall be formated:"+formatFlashStorage);
       writeDebugMessageToInternalLog((String)"[computeNewAdminConfig]MFlash storage shall be formated:"+formatFlashStorage);
     }
@@ -1150,7 +1214,7 @@ static boolean syncTimeViaNTP(void){
     udp.endPacket();
 
     // wait for a sure reply or otherwise cancel time setting process
-    delay(1200);
+    delay(2000);
     int cb = udp.parsePacket();
     if (!cb){
        if (debugMode){
