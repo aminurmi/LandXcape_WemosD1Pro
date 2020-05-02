@@ -21,8 +21,8 @@ int debugMode = 1; //0 = off, 1 = moderate debug messages, 2 = all debug message
 boolean onBoardLED = false; //(de)activates the usage of the onboard LED
 
 boolean NTPUpdateSuccessful = false;
-double version = 0.67000; //System: Reduced Log Entries during reconnect session and added time stamp, 
-//System: From time to time mowing implemented, Function deactives mowing from sunrise to sunset if set. LogFiles reduced to 122digits per line and to max 45 entries to reduce memory consumption a bit (~1kb less now)
+double version = 0.67101; //System: RAM consumption reduced at about ~2kbyte (Free Heap before: 20480) to (Free Heap after: 22432)
+//bug: Erraneous behavior corrected - Robi was always started and directly sent back after recognizing the time for mowing is not given right now
 
 int lastReadingSec=0;
 int lastReadingMin=0;
@@ -329,7 +329,8 @@ void loop() {
         }
 
         //check is "Mowing from time to time" is activated and if yes trigger mowing if we are not charging, it is not raining, allDayMowing is deactivated and we are at home
-        if(fromToMowing==true && robiAtHome==true && hasCharged == true && isCharging==false && raining == false && allDayMowing == false){
+        int currentTimeInMin = hour()*60+minute();
+        if(fromToMowing==true && robiAtHome==true && hasCharged == true && isCharging==false && raining == false && allDayMowing == false && (currentTimeInMin > fromToEndTime || currentTimeInMin < fromToStartTime)){
             if (debugMode>=1){
               Serial.println((String)"[loop]Mowing from Starttime("+fromStartTimeHour+":"+fromStartTimeMin+") to Endtime("+toEndTimeHour+":"+toEndTimeMin+") - start next round at local time:"+hour()+":"+minute()+":"+second());
               writeDebugMessageToInternalLog((String)"[loop]Mowing from Starttime("+fromStartTimeHour+":"+fromStartTimeMin+") to Endtime("+toEndTimeHour+":"+toEndTimeMin+") - start next round at local time:"+hour()+":"+minute()+":"+second());
@@ -340,8 +341,6 @@ void loop() {
         }
           
         //check if it is time to bring robi home if allDayMowing is active only!
-        int currentTimeInMin = hour()*60+minute();
-        
         if (allDayMowing==true && robiAtHome==false && robiOnTheWayHome == false && (currentTimeInMin > sunset || currentTimeInMin < sunrise)){ 
           
           showWebsite=false;
@@ -498,7 +497,7 @@ static void handleRoot(void){
     digitalWrite(LED_BUILTIN, LOW); //show connection via LED  
   }
   //preparation work
-  char temp[1250];
+  char temp[902];
   int sec = millis() / 1000;
   int min = sec / 60;
   int hr = min / 60;
@@ -508,37 +507,43 @@ static void handleRoot(void){
   //A0reading = A0reading / baseFor1V;
   //batteryVoltage = A0reading * faktorBat;
   batteryVoltage = A0reading * batteryVoltFactor;
+
+//human readable HTML - size 1250
+//<html>\
+//      <head>\
+//        <title>LandXcape</title>\
+//        <style>\
+//          body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
+//        </style>\
+//        <meta http-equiv='Refresh' content='10; url=\\'>\
+//      </head>\
+//        <body>\
+//          <h1>LandXcape</h1>\
+//          <p>Uptime: %02d:%02d:%02d</p>\
+//          <p>Local time: %02d:%02d:%02d</p>\
+//          <p>Version: %02lf</p>\
+//          <p>Battery Voltage: %02lf</p>\
+//          <br>\
+//          <form method='POST' action='/start'><button type='submit'>Start</button></form>\
+//          <br>\
+//          <form method='POST' action='/stop'><button type='submit'>Stop</button></form>\
+//          <br>\
+//          <form method='POST' action='/goHome'><button type='submit'>go Home</button></form>\
+//          <br>\
+//          <form method='POST' action='/stats'><button type='submit'>Statistics</button></form>\
+//          <br>\
+//          <form method='POST' action='/configure'><button type='submit'>Administration</button></form>\
+//          <br>\
+//          <form method='POST' action='/PWRButton'><button type='submit'>Power Robi off / on</button></form>\
+//          <br>\
+//        </body>\
+//      </html>
   
-  snprintf(temp, 1250,
-     "<html>\
-      <head>\
-        <title>LandXcape</title>\
-        <style>\
-          body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
-        </style>\
-        <meta http-equiv='Refresh' content='10; url=\\'>\
-      </head>\
-        <body>\
-          <h1>LandXcape</h1>\
-          <p>Uptime: %02d:%02d:%02d</p>\
-          <p>Local time: %02d:%02d:%02d</p>\
-          <p>Version: %02lf</p>\
-          <p>Battery Voltage: %02lf</p>\
-          <br>\
-          <form method='POST' action='/start'><button type='submit'>Start</button></form>\
-          <br>\
-          <form method='POST' action='/stop'><button type='submit'>Stop</button></form>\
-          <br>\
-          <form method='POST' action='/goHome'><button type='submit'>go Home</button></form>\
-          <br>\
-          <form method='POST' action='/stats'><button type='submit'>Statistics</button></form>\
-          <br>\
-          <form method='POST' action='/configure'><button type='submit'>Administration</button></form>\
-          <br>\
-          <form method='POST' action='/PWRButton'><button type='submit'>Power Robi off / on</button></form>\
-          <br>\
-        </body>\
-      </html>",hr, min % 60, sec % 60,
+  snprintf(temp, 902,
+     "<html><head><title>LandXcape</title><style>body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }</style><meta http-equiv='Refresh' content='10; url=\\'></head><body><h1>LandXcape</h1><p>Uptime: %02d:%02d:%02d</p><p>Local time: %02d:%02d:%02d</p><p>Version: %02lf</p><p>Battery Voltage: %02lf</p>\
+      <br><form method='POST' action='/start'><button type='submit'>Start</button></form><br><form method='POST' action='/stop'><button type='submit'>Stop</button></form><br><form method='POST' action='/goHome'><button type='submit'>go Home</button></form>\
+      <br><form method='POST' action='/stats'><button type='submit'>Statistics</button></form><br><form method='POST' action='/configure'><button type='submit'>Administration</button></form><br><form method='POST' action='/PWRButton'><button type='submit'>Power Robi off / on</button></form>\
+      <br></body></html>",hr, min % 60, sec % 60,
        hour(),minute(),second(),version,batteryVoltage
       );
   wwwserver.send(200, "text/html", temp);
@@ -571,22 +576,28 @@ static void handleStartMowing(void){
     writeDebugMessageToInternalLog((String)"[handleStartMowing]Mowing started at local time:"+hour()+":"+minute()+":"+second()+" " + year());
   }
   if (showWebsite){
-    char temp[480];
-    snprintf(temp, 480,
-       "<html>\
-        <head>\
-          <title>LandXcape</title>\
-          <style>\
-            body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
-          </style>\
-          <meta http-equiv='Refresh' content='2; url=\\'>\
-        </head>\
-          <body>\
-            <h1>LandXcape</h1>\
-            <p></p>\
-            <p>Mowing started at local time: %02d:%02d:%02d</p>\
-          </body>\
-        </html>",
+    //human readable
+//        char temp[480];
+//    snprintf(temp, 480,
+//       "<html>\
+//        <head>\
+//          <title>LandXcape</title>\
+//          <style>\
+//            body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
+//          </style>\
+//          <meta http-equiv='Refresh' content='2; url=\\'>\
+//        </head>\
+//          <body>\
+//            <h1>LandXcape</h1>\
+//            <p></p>\
+//            <p>Mowing started at local time: %02d:%02d:%02d</p>\
+//          </body>\
+//        </html>",
+//        hour(),minute(),second()
+//        );
+    char temp[290];
+    snprintf(temp, 290,
+       "<html><head><title>LandXcape</title><style>body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }</style><meta http-equiv='Refresh' content='2; url=\\'></head><body><h1>LandXcape</h1><p></p><p>Mowing started at local time: %02d:%02d:%02d</p></body></html>",
         hour(),minute(),second()
         );
     wwwserver.send(200, "text/html", temp);
@@ -619,22 +630,28 @@ static void handleStopMowing(){
     writeDebugMessageToInternalLog((String)"[handleStopMowing]Mowing stoped at local time:"+hour()+":"+minute()+":"+second()+" " + year());
   }
   if(showWebsite){
-    char temp[450];
-    snprintf(temp, 450,
-     "<html>\
-      <head>\
-        <title>LandXcape</title>\
-        <style>\
-          body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
-        </style>\
-        <meta http-equiv='Refresh' content='2; url=\\'>\
-      </head>\
-        <body>\
-          <h1>LandXcape</h1>\
-          <p></p>\
-          <p>Mowing stoped at local time: %02d:%02d:%02d</p>\
-        </body>\
-      </html>",
+    // human readable version
+//        char temp[450];
+//    snprintf(temp, 450,
+//     "<html>\
+//      <head>\
+//        <title>LandXcape</title>\
+//        <style>\
+//          body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
+//        </style>\
+//        <meta http-equiv='Refresh' content='2; url=\\'>\
+//      </head>\
+//        <body>\
+//          <h1>LandXcape</h1>\
+//          <p></p>\
+//          <p>Mowing stoped at local time: %02d:%02d:%02d</p>\
+//        </body>\
+//      </html>",
+//      hour(),minute(),second()
+//      );
+    char temp[290];
+    snprintf(temp, 290,
+     "<html><head><title>LandXcape</title><style>body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }</style><meta http-equiv='Refresh' content='2; url=\\'></head><body><h1>LandXcape</h1><p></p><p>Mowing stoped at local time: %02d:%02d:%02d</p></body></html>",
       hour(),minute(),second()
       );
     wwwserver.send(200, "text/html", temp);
@@ -665,22 +682,28 @@ static void handleGoHome(){
     writeDebugMessageToInternalLog((String)"[handleGoHome]Robi sent home at local time:"+hour()+":"+minute()+":"+second()+" " + year());
   }
   if (showWebsite){
-  char temp[470];
-    snprintf(temp, 470,
-     "<html>\
-      <head>\
-        <title>LandXcape</title>\
-        <style>\
-          body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
-        </style>\
-        <meta http-equiv='Refresh' content='2; url=\\'>\
-      </head>\
-        <body>\
-          <h1>LandXcape</h1>\
-          <p></p>\
-          <p>Mowing stoped and sent back to base at local time: %02d:%02d:%02d</p>\
-        </body>\
-      </html>",
+    //human readable version
+//      char temp[470];
+//    snprintf(temp, 470,
+//     "<html>\
+//      <head>\
+//        <title>LandXcape</title>\
+//        <style>\
+//          body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
+//        </style>\
+//        <meta http-equiv='Refresh' content='2; url=\\'>\
+//      </head>\
+//        <body>\
+//          <h1>LandXcape</h1>\
+//          <p></p>\
+//          <p>Mowing stoped and sent back to base at local time: %02d:%02d:%02d</p>\
+//        </body>\
+//      </html>",
+//      hour(),minute(),second()
+//      );
+  char temp[310];
+    snprintf(temp, 310,
+     "<html><head><title>LandXcape</title><style>body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }</style><meta http-equiv='Refresh' content='2; url=\\'></head><body><h1>LandXcape</h1><p></p><p>Mowing stoped and sent back to base at local time: %02d:%02d:%02d</p></body></html>",
       hour(),minute(),second()
       );
     wwwserver.send(200, "text/html", temp);
@@ -770,58 +793,67 @@ static void showStatistics(void){
         strcat(rainDelayText_," minutes");
       }
     }
-        
-    char temp[1820];
-    snprintf(temp, 1820,
-     "<html>\
-      <head>\
-        <title>LandXcape Statistics</title>\
-        <style>\
-          body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
-        </style>\
-        <meta http-equiv='Refresh' content='10; url=\\stats'>\
-      </head>\
-        <body>\
-          <h1>LandXcape Statistics</h1>\
-          <p></p>\
-          <p>Uptime: %02d days %02d hour %02d min %02d sec</p>\
-          <p>Time: %02d:%02d:%02d</p>\
-          <p>Date: %02d.%02d.%02d</p>\
-          <p>Computed sunrise approx: %s</p>\
-          <p>Computed sunset approx: %s</p>\
-          <p>HasCharged/isCharging: %s/%s   (OnTheWay)Home: (%s)%s</p>\
-          <p>Weather status: %s %s</p>\
-          <p>Version: %02lf</p>\
-          <br>\
-          <table style='width:450px'>\
-            <tr>\
-              <th>Battery:</th>\
-            </tr>\
-            <tr>\
-              <th>Actual voltage: %02lf</th>\
-              <th>Lowest voltage: %02lf</th>\
-              <th>Highest voltage: %02lf</th>\
-            </tr>\
-            <tr>\
-              <th>Cell:</th>\
-              <th></th>\
-              <th></th>\
-            </tr>\
-            <tr>\
-              <th>Actual voltage: %02lf</th>\
-              <th>Lowest voltage: %02lf</th>\
-              <th>Highest voltage: %02lf</th>\
-            </tr>\
-          </table>\
-          <p></p>\
-          <p><b>Battery history of the last %02dmin</b></p>\
-          <img src=\"/BatGraph.svg\" />\
-          <p></p>\
-          <p><b>Memory Information in bytes:</b></p>\
-          <p>Free Heap: %d - Fragmentation: %d - MaxFreeBlockSize: %d</p>\
-          <form method='POST' action='/'><button type='submit'>Back to main menu</button></form>\
-        </body>\
-      </html>",
+        //human readable version
+//            char temp[1820];
+//    snprintf(temp, 1820,
+//     "<html>\
+//      <head>\
+//        <title>LandXcape Statistics</title>\
+//        <style>\
+//          body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
+//        </style>\
+//        <meta http-equiv='Refresh' content='10; url=\\stats'>\
+//      </head>\
+//        <body>\
+//          <h1>LandXcape Statistics</h1>\
+//          <p></p>\
+//          <p>Uptime: %02d days %02d hour %02d min %02d sec</p>\
+//          <p>Time: %02d:%02d:%02d</p>\
+//          <p>Date: %02d.%02d.%02d</p>\
+//          <p>Computed sunrise approx: %s</p>\
+//          <p>Computed sunset approx: %s</p>\
+//          <p>HasCharged/isCharging: %s/%s   (OnTheWay)Home: (%s)%s</p>\
+//          <p>Weather status: %s %s</p>\
+//          <p>Version: %02lf</p>\
+//          <br>\
+//          <table style='width:450px'>\
+//            <tr>\
+//              <th>Battery:</th>\
+//            </tr>\
+//            <tr>\
+//              <th>Actual voltage: %02lf</th>\
+//              <th>Lowest voltage: %02lf</th>\
+//              <th>Highest voltage: %02lf</th>\
+//            </tr>\
+//            <tr>\
+//              <th>Cell:</th>\
+//              <th></th>\
+//              <th></th>\
+//            </tr>\
+//            <tr>\
+//              <th>Actual voltage: %02lf</th>\
+//              <th>Lowest voltage: %02lf</th>\
+//              <th>Highest voltage: %02lf</th>\
+//            </tr>\
+//          </table>\
+//          <p></p>\
+//          <p><b>Battery history of the last %02dmin</b></p>\
+//          <img src=\"/BatGraph.svg\" />\
+//          <p></p>\
+//          <p><b>Memory Information in bytes:</b></p>\
+//          <p>Free Heap: %d byte - Fragmentation: %d - MaxFreeBlockSize: %d byte</p>\
+//          <form method='POST' action='/'><button type='submit'>Back to main menu</button></form>\
+//        </body>\
+//      </html>",
+//      days,hr%24, min % 60, sec % 60,hour(),minute(),second(),day(),month(),year(),sunrise__,sunset__,hasChargedValue,isChargingValue,robiOnTheWayHomeValue,robiAtHomeValue,rainStatus_,rainDelayText_,
+//      version,batteryVoltage,lowestBatVoltage,highestBatVoltage,cellVoltage,lowestCellVoltage,highestCellVoltage,lastXXminBatHist,ESP.getFreeHeap(),ESP.getHeapFragmentation(),ESP.getMaxFreeBlockSize()
+//      );
+    char temp[1210];
+    snprintf(temp, 1210,
+     "<html><head><title>LandXcape Statistics</title><style>body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }</style><meta http-equiv='Refresh' content='10; url=\\stats'></head><body><h1>LandXcape Statistics</h1><p></p><p>Uptime: %02d days %02d hour %02d min %02d sec</p><p>Time: %02d:%02d:%02d</p>\
+      <p>Date: %02d.%02d.%02d</p><p>Computed sunrise approx: %s</p><p>Computed sunset approx: %s</p><p>HasCharged/isCharging: %s/%s   (OnTheWay)Home: (%s)%s</p><p>Weather status: %s %s</p><p>Version: %02lf</p><br><table style='width:450px'><tr><th>Battery:</th></tr><tr><th>Actual voltage: %02lf</th><th>Lowest voltage: %02lf</th>\
+      <th>Highest voltage: %02lf</th></tr><tr><th>Cell:</th><th></th><th></th></tr><tr><th>Actual voltage: %02lf</th><th>Lowest voltage: %02lf</th><th>Highest voltage: %02lf</th></tr></table><p></p><p><b>Battery history of the last %02dmin</b></p><img src=\"/BatGraph.svg\"/><p></p><p><b>Memory Information in bytes:</b></p>\
+      <p>Free Heap: %d byte - Fragmentation: %d - MaxFreeBlockSize: %d byte</p><form method='POST' action='/'><button type='submit'>Back to main menu</button></form></body></html>",
       days,hr%24, min % 60, sec % 60,hour(),minute(),second(),day(),month(),year(),sunrise__,sunset__,hasChargedValue,isChargingValue,robiOnTheWayHomeValue,robiAtHomeValue,rainStatus_,rainDelayText_,
       version,batteryVoltage,lowestBatVoltage,highestBatVoltage,cellVoltage,lowestCellVoltage,highestCellVoltage,lastXXminBatHist,ESP.getFreeHeap(),ESP.getHeapFragmentation(),ESP.getMaxFreeBlockSize()
       );
@@ -873,52 +905,62 @@ static void handleAdministration(void){
     if (ignoreRain==true){
       strncpy(ignoreRainValue, "checked  ",sizeof(ignoreRainValue));
     } 
-
-    char temp[2500];
-    snprintf(temp, 2500,
-     "<html>\
-     <head>\
-     <title>LandXcape</title>\
-      <style>\
-        body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088;}\
-      </style>\
-    </head>\
-      <body>\
-        <h1>LandXcape Administration Site</h1>\
-        <p></p>\
-        <form method='POST' action='/newAdminConfiguration'>\
-        Battery history: Show <input type='number' name='batHistMinShown' value='%02d'  min=60 max=600> minutes<br>\
-        Activate function \"Go Home Early\" <input type='checkbox' name='goHomeEarly' %s ><br>\
-        If activated, send LandXcape home at: <input type='number' name='batVol' value='%02d' min=16 max=20> V <input type='number' name='batMiliVolt' value='%03d' min=000 max=999>mV<br>\
-        If not activated, this value is used to define the battery voltage <br> where no new round of mowing should be started before charging again.<br>\
-        <br>\
-        Activate function \"Mowing from sunrise to sunset\" <input type='checkbox' name='allDayMowing_' %s ><br>\
-        <br>\
-        Activate function \"Mowing from <input type='time' name='startTime' value='%02d:%02d'> to <input type='time' name='endTime' value='%02d:%02d'> \" <input type='checkbox' name='fromToMowing_' %s ><br>\
-        This function deactivates \"Mowing from sunrise to sunset\" if set.<br>\
-        <br>\
-        Forward rain information to LandXcape to trigger original behavior <input type='checkbox' name='forwardRainInfo_' %s ><br>\
-        <br>\
-        Ignore rain - just mow nevertheless if it rains or not <input type='checkbox' name='ignoreRain_' %s ><br>\
-        <br>\
-        FileSystem Functions: <br>\
-        Format FileSystem <b>ATTENTION All persistent Data will be lost ATTENTION</b> <input type='checkbox' name='formatFlashStorage'><br>\
-        This must be done once before the filesystem can be used.<br>\
-        Will take about 60Seconds<br>\
-        <br>\
-        <input type='submit' value='Submit'></form>\
-        <form method='POST' action='/'><button type='submit'>Cancel</button></form>\
-        <p></p>\
-        <br>\
-        <table style='width:450px'>\
-          <tr>\
-            <th><form method='POST' action='/updateLandXcape'><button type='submit'>SW Update via WLAN</button></form></th>\
-            <th><form method='POST' action='/resetWemos'><button type='submit'>Reset WEMOS board</button></form></th>\
-            <th><form method='POST' action='/logFiles'><button type='submit'>Show Log-Entries</button></form></th>\
-          </tr>\
-        </table>\
-      </body>\
-    </html>",lastXXminBatHist,earlyGoHomeCheckBoxValue,earlyGoHomeVolt_,earlyGoHome_mVolt_,allDayMowingCheckBoxValue,fromStartTimeHour,fromStartTimeMin,toEndTimeHour,toEndTimeMin,fromToMowingCheckBoxValue,forwardRainInfoValue,ignoreRainValue
+//human readable version
+//    char temp[2500];
+//    snprintf(temp, 2500,
+//     "<html>\
+//     <head>\
+//     <title>LandXcape</title>\
+//      <style>\
+//        body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088;}\
+//      </style>\
+//    </head>\
+//      <body>\
+//        <h1>LandXcape Administration Site</h1>\
+//        <p></p>\
+//        <form method='POST' action='/newAdminConfiguration'>\
+//        Battery history: Show <input type='number' name='batHistMinShown' value='%02d'  min=60 max=600> minutes<br>\
+//        Activate function \"Go Home Early\" <input type='checkbox' name='goHomeEarly' %s ><br>\
+//        If activated, send LandXcape home at: <input type='number' name='batVol' value='%02d' min=16 max=20> V <input type='number' name='batMiliVolt' value='%03d' min=000 max=999>mV<br>\
+//        If not activated, this value is used to define the battery voltage <br> where no new round of mowing should be started before charging again.<br>\
+//        <br>\
+//        Activate function \"Mowing from sunrise to sunset\" <input type='checkbox' name='allDayMowing_' %s ><br>\
+//        <br>\
+//        Activate function \"Mowing from <input type='time' name='startTime' value='%02d:%02d'> to <input type='time' name='endTime' value='%02d:%02d'> \" <input type='checkbox' name='fromToMowing_' %s ><br>\
+//        This function deactivates \"Mowing from sunrise to sunset\" if set.<br>\
+//        <br>\
+//        Forward rain information to LandXcape to trigger original behavior <input type='checkbox' name='forwardRainInfo_' %s ><br>\
+//        <br>\
+//        Ignore rain - just mow nevertheless if it rains or not <input type='checkbox' name='ignoreRain_' %s ><br>\
+//        <br>\
+//        FileSystem Functions: <br>\
+//        Format FileSystem <b>ATTENTION All persistent Data will be lost ATTENTION</b> <input type='checkbox' name='formatFlashStorage'><br>\
+//        This must be done once before the filesystem can be used.<br>\
+//        Will take about 60Seconds<br>\
+//        <br>\
+//        <input type='submit' value='Submit'></form>\
+//        <form method='POST' action='/'><button type='submit'>Cancel</button></form>\
+//        <p></p>\
+//        <br>\
+//        <table style='width:450px'>\
+//          <tr>\
+//            <th><form method='POST' action='/updateLandXcape'><button type='submit'>SW Update via WLAN</button></form></th>\
+//            <th><form method='POST' action='/resetWemos'><button type='submit'>Reset WEMOS board</button></form></th>\
+//            <th><form method='POST' action='/logFiles'><button type='submit'>Show Log-Entries</button></form></th>\
+//          </tr>\
+//        </table>\
+//      </body>\
+//    </html>",lastXXminBatHist,earlyGoHomeCheckBoxValue,earlyGoHomeVolt_,earlyGoHome_mVolt_,allDayMowingCheckBoxValue,fromStartTimeHour,fromStartTimeMin,toEndTimeHour,toEndTimeMin,fromToMowingCheckBoxValue,forwardRainInfoValue,ignoreRainValue
+//      );
+    char temp[2200];
+    snprintf(temp, 2200,
+     "<html><head><title>LandXcape</title><style>body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088;}</style></head><body><h1>LandXcape Administration Site</h1><p></p><form method='POST' action='/newAdminConfiguration'>Battery history: Show <input type='number' name='batHistMinShown' value='%02d'  min=60 max=600> minutes<br>\
+      Activate function \"Go Home Early\" <input type='checkbox' name='goHomeEarly' %s ><br>If activated, send LandXcape home at: <input type='number' name='batVol' value='%02d' min=16 max=20> V <input type='number' name='batMiliVolt' value='%03d' min=000 max=999>mV<br>If not activated, this value is used to define the battery voltage <br> where no new round of mowing should be started before charging again.<br>\
+      <br>Activate function \"Mowing from sunrise to sunset\" <input type='checkbox' name='allDayMowing_' %s ><br><br>Activate function \"Mowing from <input type='time' name='startTime' value='%02d:%02d'> to <input type='time' name='endTime' value='%02d:%02d'> \" <input type='checkbox' name='fromToMowing_' %s ><br>This function deactivates \"Mowing from sunrise to sunset\" if set.<br><br>\
+      Forward rain information to LandXcape to trigger original behavior <input type='checkbox' name='forwardRainInfo_' %s ><br><br>Ignore rain - just mow nevertheless if it rains or not <input type='checkbox' name='ignoreRain_' %s ><br><br>FileSystem Functions: <br>Format FileSystem <b>ATTENTION All persistent Data will be lost ATTENTION</b> <input type='checkbox' name='formatFlashStorage'><br>\
+      This must be done once before the filesystem can be used.<br>Will take about 60Seconds<br><br><input type='submit' value='Submit'></form><form method='POST' action='/'><button type='submit'>Cancel</button></form><p></p><br><table style='width:450px'><tr><th><form method='POST' action='/updateLandXcape'><button type='submit'>SW Update via WLAN</button></form></th>\
+      <th><form method='POST' action='/resetWemos'><button type='submit'>Reset WEMOS board</button></form></th><th><form method='POST' action='/logFiles'><button type='submit'>Show Log-Entries</button></form></th></tr></table></body>\</html>",
+        lastXXminBatHist,earlyGoHomeCheckBoxValue,earlyGoHomeVolt_,earlyGoHome_mVolt_,allDayMowingCheckBoxValue,fromStartTimeHour,fromStartTimeMin,toEndTimeHour,toEndTimeMin,fromToMowingCheckBoxValue,forwardRainInfoValue,ignoreRainValue
       );
 
       wwwserver.send(200, "text/html", temp);        
@@ -966,7 +1008,7 @@ static void computeNewAdminConfig(void){
       fromToEndTime = toEndTimeHour*60+toEndTimeMin;
       fromToStartTime = fromStartTimeHour*60+fromStartTimeMin;
       
-      if (toEndTimeHour<=fromStartTimeHour || (toEndTimeHour==fromStartTimeHour && toEndTimeMin<=fromStartTimeMin)){
+      if (toEndTimeHour<fromStartTimeHour || (toEndTimeHour==fromStartTimeHour && toEndTimeMin<=fromStartTimeMin)){
         Serial.println((String)"[computeNewAdminConfig]MowingFromTo: Endtime("+toEndTimeHour+":"+toEndTimeMin+") before Starttime("+fromStartTimeHour+":"+fromStartTimeMin+") or invalid, therfore ignoring.");
         writeDebugMessageToInternalLog((String)"[computeNewAdminConfig]MowingFromTo: Endtime before Starttime or invalid, therfore ignoring.");
         fromToMowing=false;
@@ -979,30 +1021,37 @@ static void computeNewAdminConfig(void){
     ignoreRain = (boolean)wwwserver.hasArg("ignoreRain_");
 
     boolean formatFlashStorage = (boolean)wwwserver.hasArg("formatFlashStorage");
-    
-    char temp[880];
-    snprintf(temp, 880,
-     "<html>\
-      <head>\
-        <title>LandXcape</title>\
-        <style>\
-          body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
-        </style>\
-        <meta http-equiv='Refresh' content='3; url=\\'>\
-      </head>\
-        <body>\
-          <h1>LandXcape - administration changes submited at local time: %02d:%02d:%02d</h1>\
-          <p></p>\
-          <p>LastXXminBatHist Variable changed to: %02d</p>\
-          <p>GoHomeEarly Function: %d</p>\
-          <p>GoHomeEarly Voltage:: %2.3f</p>\
-          <p>ForwardRainInfoToLandXcape Function: %d</p>\
-          <p>Ignore rain Function: %d</p>\
-          <p>Mow from sunrise to Sunset Function: %d</p>\
-          <p>Mow from %d:%d to %d:%d Function: %d</p>\
-          <p>Flash Storage will be formated: %d</p>\
-      </body>\
-    </html>",
+
+//human readable form
+//    char temp[880];
+//    snprintf(temp, 880,
+//     "<html>\
+//      <head>\
+//        <title>LandXcape</title>\
+//        <style>\
+//          body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
+//        </style>\
+//        <meta http-equiv='Refresh' content='3; url=\\'>\
+//      </head>\
+//        <body>\
+//          <h1>LandXcape - administration changes submited at local time: %02d:%02d:%02d</h1>\
+//          <p></p>\
+//          <p>LastXXminBatHist Variable changed to: %02d</p>\
+//          <p>GoHomeEarly Function: %d</p>\
+//          <p>GoHomeEarly Voltage:: %2.3f</p>\
+//          <p>ForwardRainInfoToLandXcape Function: %d</p>\
+//          <p>Ignore rain Function: %d</p>\
+//          <p>Mow from sunrise to Sunset Function: %d</p>\
+//          <p>Mow from %d:%d to %d:%d Function: %d</p>\
+//          <p>Flash Storage will be formated: %d</p>\
+//      </body>\
+//    </html>",
+//    hour(),minute(),second(),lastXXminBatHist,earlyGoHome,earlyGoHomeVolt,forwardRainInfoToLandXcape,ignoreRain,allDayMowing,fromStartTimeHour,fromStartTimeMin,toEndTimeHour,toEndTimeMin,fromToMowing,formatFlashStorage
+//    );
+    char temp[620];
+    snprintf(temp, 620,
+     "<html><head><title>LandXcape</title><style>body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }</style><meta http-equiv='Refresh' content='3; url=\\'></head><body><h1>LandXcape - administration changes submited at local time: %02d:%02d:%02d</h1><p></p><p>LastXXminBatHist Variable changed to: %02d</p><p>GoHomeEarly Function: %d</p><p>GoHomeEarly Voltage:: %2.3f</p>\
+      <p>ForwardRainInfoToLandXcape Function: %d</p><p>Ignore rain Function: %d</p><p>Mow from sunrise to Sunset Function: %d</p><p>Mow from %d:%d to %d:%d Function: %d</p><p>Flash Storage will be formated: %d</p></body></html>",
     hour(),minute(),second(),lastXXminBatHist,earlyGoHome,earlyGoHomeVolt,forwardRainInfoToLandXcape,ignoreRain,allDayMowing,fromStartTimeHour,fromStartTimeMin,toEndTimeHour,toEndTimeMin,fromToMowing,formatFlashStorage
     );
     wwwserver.send(200, "text/html", temp);
@@ -1061,27 +1110,33 @@ static void handleSwitchOnOff(void){
     writeDebugMessageToInternalLog((String)"[handleSwitchOnOff]handleSwitchOnOff triggered at local time:"+hour()+":"+minute()+":"+second()+" " + year());
   }
    
-   digitalWrite(PWR,LOW);//Press Home Button 
+   digitalWrite(PWR,LOW);//Press Pwr Button 
    delay(PWRButtonPressTime);
-   digitalWrite(PWR,HIGH);//Release Home Button 
+   digitalWrite(PWR,HIGH);//Release Pwr Button 
    delay(PWRButtonPressTime);
-   
-  char temp[420];
-  snprintf(temp, 420,
-   "<html>\
-    <head>\
-      <title>LandXcape</title>\
-      <style>\
-        body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
-      </style>\
-      <meta http-equiv='Refresh' content='4; url=\\'>\
-    </head>\
-      <body>\
-        <h1>LandXcape</h1>\
-        <p></p>\
-        <p>Robi switched off/on at local time: %02d:%02d:%02d</p>\
-      </body>\
-    </html>",
+
+   //humnan readable version
+//     char temp[420];
+//  snprintf(temp, 420,
+//   "<html>\
+//    <head>\
+//      <title>LandXcape</title>\
+//      <style>\
+//        body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
+//      </style>\
+//      <meta http-equiv='Refresh' content='4; url=\\'>\
+//    </head>\
+//      <body>\
+//        <h1>LandXcape</h1>\
+//        <p></p>\
+//        <p>Robi switched off/on at local time: %02d:%02d:%02d</p>\
+//      </body>\
+//    </html>",
+//    hour(),minute(),second()
+//    );
+  char temp[300];
+  snprintf(temp, 300,
+   "<html><head><title>LandXcape</title><style>body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }</style><meta http-equiv='Refresh' content='4; url=\\'></head><body><h1>LandXcape</h1><p></p><p>Robi switched off/on at local time: %02d:%02d:%02d</p></body></html>",
     hour(),minute(),second()
     );
   wwwserver.send(200, "text/html", temp);
@@ -1280,24 +1335,32 @@ static void handleWebUpdate(void){
     digitalWrite(LED_BUILTIN, LOW); //show connection via LED   
   }
 
+//human readable version
+//  char temp[650];
+//  snprintf(temp, 650,
+//   "<html>\
+//    <head>\
+//      <title>LandXcape WebUpdate Site</title>\
+//      <style>\
+//        body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
+//      </style>\
+//    </head>\
+//      <body>\
+//        <h1>LandXcape WebUpdate Site</h1>\
+//        <p>Local time: %02d:%02d:%02d</p>\
+//        <p>Version: %02lf</p>\
+//         <form method='POST' action='/updateBin' enctype='multipart/form-data'><input type='file' name='update'><input type='submit' value='Update'></form>\
+//         <form method='POST' action='/'><button type='submit'>Cancel</button></form>\
+//      </body>\
+//    </html>",
+//     hour(),minute(),second(),version
+//     );
+
   //preparation work
-  char temp[650];
-  snprintf(temp, 650,
-   "<html>\
-    <head>\
-      <title>LandXcape WebUpdate Site</title>\
-      <style>\
-        body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
-      </style>\
-    </head>\
-      <body>\
-        <h1>LandXcape WebUpdate Site</h1>\
-        <p>Local time: %02d:%02d:%02d</p>\
-        <p>Version: %02lf</p>\
-         <form method='POST' action='/updateBin' enctype='multipart/form-data'><input type='file' name='update'><input type='submit' value='Update'></form>\
-         <form method='POST' action='/'><button type='submit'>Cancel</button></form>\
-      </body>\
-    </html>",
+  char temp[500];
+  snprintf(temp, 500,
+   "<html><head><title>LandXcape WebUpdate Site</title><style>body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }</style></head><body><h1>LandXcape WebUpdate Site</h1><p>Local time: %02d:%02d:%02d</p><p>Version: %02lf</p><form method='POST' action='/updateBin' enctype='multipart/form-data'><input type='file' name='update'><input type='submit' value='Update'></form>\
+    <form method='POST' action='/'><button type='submit'>Cancel</button></form></body></html>",
      hour(),minute(),second(),version
      );
           
@@ -1363,23 +1426,30 @@ static void handleWebUpdateHelperFunction (void){
         if (Update.end(true)) { //true to set the size to the current progress
           Serial.printf("Update Success: %u\nRebooting...\n", upload.totalSize);
 
+//human readable version
+//        char temp[500];
+//        snprintf(temp, 500,
+//         "<html>\
+//          <head>\
+//            <title>LandXcape</title>\
+//            <style>\
+//              body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
+//            </style>\
+//            <meta http-equiv='Refresh' content='5; url=\\'>\
+//          </head>\
+//            <body>\
+//              <h1>LandXcape</h1>\
+//              <p></p>\
+//              <p>Update successfull at Local time: %02d:%02d:%02d</p>\
+//            </body>\
+//          </html>",
+//          hour(),minute(),second()
+//          );
+
       //send the user back to the main page
-        char temp[500];
-        snprintf(temp, 500,
-         "<html>\
-          <head>\
-            <title>LandXcape</title>\
-            <style>\
-              body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
-            </style>\
-            <meta http-equiv='Refresh' content='5; url=\\'>\
-          </head>\
-            <body>\
-              <h1>LandXcape</h1>\
-              <p></p>\
-              <p>Update successfull at Local time: %02d:%02d:%02d</p>\
-            </body>\
-          </html>",
+        char temp[300];
+        snprintf(temp, 300,
+         "<html><head><title>LandXcape</title><style>body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }</style><meta http-equiv='Refresh' content='5; url=\\'></head><body><h1>LandXcape</h1><p></p><p>Update successfull at Local time: %02d:%02d:%02d</p></body></html>",
           hour(),minute(),second()
           );
       wwwserver.send(200, "text/html", temp);
@@ -1517,23 +1587,28 @@ void resetWemosBoard(void){
           Serial.println("[resetWemosBoard]Software reset triggered. Reseting...");
           writeDebugMessageToInternalLog("[resetWemosBoard]Software reset triggered. Reseting...");
   }
-
-  char temp[450];
-  snprintf(temp, 450,
-   "<html>\
-    <head>\
-      <title>LandXcape</title>\
-      <style>\
-        body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
-      </style>\
-      <meta http-equiv='Refresh' content='2; url=\\'>\
-    </head>\
-      <body>\
-        <h1>LandXcape</h1>\
-        <p></p>\
-        <p>Software reset triggered. Reseting... at Time: %02d:%02d:%02d</p>\
-      </body>\
-    </html>",
+//human readable version
+//  char temp[450];
+//  snprintf(temp, 450,
+//   "<html>\
+//    <head>\
+//      <title>LandXcape</title>\
+//      <style>\
+//        body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }\
+//      </style>\
+//      <meta http-equiv='Refresh' content='2; url=\\'>\
+//    </head>\
+//      <body>\
+//        <h1>LandXcape</h1>\
+//        <p></p>\
+//        <p>Software reset triggered. Reseting... at Time: %02d:%02d:%02d</p>\
+//      </body>\
+//    </html>",
+//    hour(),minute(),second()
+//    );
+  char temp[310];
+  snprintf(temp, 310,
+   "<html><head><title>LandXcape</title><style>body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }</style><meta http-equiv='Refresh' content='2; url=\\'></head><body><h1>LandXcape</h1><p></p><p>Software reset triggered. Reseting... at Time: %02d:%02d:%02d</p></body></html>",
     hour(),minute(),second()
     );
   wwwserver.send(200, "text/html", temp);
