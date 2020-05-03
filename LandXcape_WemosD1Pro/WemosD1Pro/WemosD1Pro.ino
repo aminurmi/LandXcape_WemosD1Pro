@@ -21,8 +21,9 @@ int debugMode = 1; //0 = off, 1 = moderate debug messages, 2 = all debug message
 boolean onBoardLED = false; //(de)activates the usage of the onboard LED
 
 boolean NTPUpdateSuccessful = false;
-double version = 0.67101; //System: RAM consumption reduced at about ~2kbyte (Free Heap before: 20480) to (Free Heap after: 22432)
-//bug: Erraneous behavior corrected - Robi was always started and directly sent back after recognizing the time for mowing is not given right now
+double version = 0.68002; //BugFix: Raindetection works now more reliable, BugFix: RobiOnTheWayHome is now only true, if Robi is really on the way home and not if the voltage has dropped below the given limit, where no new round should be started.
+//System: Raining delay increased to 30min,
+//System: LogFiles are now entirely stored within the Flash memory if possible and are staying if Robi becomes powerless or a reset is done  -> Memory usage reduced by ~6kbyte
 
 int lastReadingSec=0;
 int lastReadingMin=0;
@@ -46,11 +47,12 @@ int batVoltHistCounter = 0;
 
 boolean robiAtHome = false;
 boolean robiOnTheWayHome = false;
+boolean newRoundIsOkay = false;
 boolean isCharging = false;
 boolean hasCharged = false;
 int hasChargedDelay = 6; //stabilize charging detection
 boolean raining = false;
-const int rainingDelay = 20; //in minutes delay after rain has been detected
+const int rainingDelay = 30; //in minutes delay after rain has been detected
 int rainingDelay_ = rainingDelay; //delay counter to subtract from
 
 int rainSensorShortcutTime = 10000; // 10sek shortcut the LandXcape Rain sensor cable with our relay since it only periodically checks for rain
@@ -75,7 +77,8 @@ int fromToEndTime = -1;
 int fromToStartTime = -1;
 const int maxLogEntries = 50;
 const int maxLogLength = 110;
-char logRotateBuffer [maxLogEntries][maxLogLength]; // 122*45*1byte je character = ~5.5kb (max) size
+char logRotateBuffer[1][0]; //initialization below within writeDebugMessageToInteralLog and only if storing on the FS is not possible!
+boolean logRotateBufferAvailable = false;
 int logRotateCounter = 0; 
 
 int STOP = D1;
@@ -113,6 +116,7 @@ boolean timeAdjusted = false;
 
 //Filesystem variables
 const char* batGraph = "/data/BatGraph.svg";
+const char* logFile = "/data/logFile.txt";
 const char* adminSite = "/data/adminSite.html";
 const char* CSSFile = "/data/style.css";
 
@@ -231,7 +235,19 @@ void setup() {
 
   changeUTCtoLocalTime();//change time to local time
   computeSunriseSunsetInformation(); //compute the new sunrise and sunset for today
-  
+
+  //check if logFile already exists and if not create the heading
+  if(!SPIFFS.exists(logFile)){
+    File myLogs = SPIFFS.open(logFile,"w");
+
+    if(!myLogs){
+      Serial.println("[setup]LogFile creation failed...");
+      writeDebugMessageToInternalLog((String)"[setup]LogFile creation failed...");
+    }
+    //write initial part for viewing the logfile via web browser
+    myLogs.println("<html><head><title>LandXcape - WEMOS - Debug Entries</title><style>body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }</style></head><body><h1>LandXcape - WEMOS - Debug Entries</h1><p></p><table style='width:450px'><tr><th><form method='POST' action='/logFiles'><button type='submit'>Reload</button></form></th><th><form method='POST' action='/configure'><button type='submit'>Exit</button></form></th>\</tr></table><br>");
+    myLogs.close();
+  }
     
   if (debugMode>=1){
     Serial.println("[setup]finished...");
@@ -255,7 +271,6 @@ void loop() {
 
     //since the digital input are producing a lot of noise from the detector board we reduce the readings to every 10 seconds like on the LandXcape board as well and switch the digital input offline in the mean time
     if (second()%5==0){ //read every 5th second -> :05,:15,:25...
-        delay(100);
         rainSensorCounter = rainSensorCounter%10;
         rainSensorResults[rainSensorCounter] = digitalRead(REGENSENSOR_WEMOS);
         rainSensorCounter++;
@@ -303,14 +318,13 @@ void loop() {
         checkBatValues();
 
         //check is "Mowing from Sunrise to Sunset is activated and if yes trigger mowing if we are not charging and we are at home
-        if(allDayMowing==true && robiAtHome==true && hasCharged == true && isCharging==false){
+        if(allDayMowing==true && robiAtHome==true && hasCharged == true && isCharging==false && robiOnTheWayHome==false && raining==false && newRoundIsOkay==true){
 
           //check if the sun is up ;)
           int currentTimeInMin = hour()*60+minute();
 
           if(sunrise<=currentTimeInMin && sunset >=currentTimeInMin){ //activate function only while the sun is up and running ;)
 
-              if(robiAtHome==true && isCharging==false && hasCharged == true && raining == false){ //Charging finished, battery voltage drops again since no higher charging voltage is present
                   if (debugMode>=1){
                     Serial.println((String)"[loop]Mowing from Sunrise to Sunset - start next round at local time:"+hour()+":"+minute()+":"+second());
                     writeDebugMessageToInternalLog((String)"[loop]Mowing from Sunrise to Sunset - start next round at local time:"+hour()+":"+minute()+":"+second());
@@ -318,7 +332,7 @@ void loop() {
                   showWebsite=false;
                   handleStartMowing(); //start mowing; boolean variables will be set within this function
                   showWebsite=true;
-              }
+              
        
           }else{
             if (debugMode>=2){
@@ -330,7 +344,7 @@ void loop() {
 
         //check is "Mowing from time to time" is activated and if yes trigger mowing if we are not charging, it is not raining, allDayMowing is deactivated and we are at home
         int currentTimeInMin = hour()*60+minute();
-        if(fromToMowing==true && robiAtHome==true && hasCharged == true && isCharging==false && raining == false && allDayMowing == false && (currentTimeInMin > fromToEndTime || currentTimeInMin < fromToStartTime)){
+        if(fromToMowing==true && robiAtHome==true && hasCharged == true && isCharging==false && raining == false && allDayMowing == false && robiOnTheWayHome==false && (currentTimeInMin > fromToEndTime || currentTimeInMin < fromToStartTime) && newRoundIsOkay==true){
             if (debugMode>=1){
               Serial.println((String)"[loop]Mowing from Starttime("+fromStartTimeHour+":"+fromStartTimeMin+") to Endtime("+toEndTimeHour+":"+toEndTimeMin+") - start next round at local time:"+hour()+":"+minute()+":"+second());
               writeDebugMessageToInternalLog((String)"[loop]Mowing from Starttime("+fromStartTimeHour+":"+fromStartTimeMin+") to Endtime("+toEndTimeHour+":"+toEndTimeMin+") - start next round at local time:"+hour()+":"+minute()+":"+second());
@@ -848,8 +862,8 @@ static void showStatistics(void){
 //      days,hr%24, min % 60, sec % 60,hour(),minute(),second(),day(),month(),year(),sunrise__,sunset__,hasChargedValue,isChargingValue,robiOnTheWayHomeValue,robiAtHomeValue,rainStatus_,rainDelayText_,
 //      version,batteryVoltage,lowestBatVoltage,highestBatVoltage,cellVoltage,lowestCellVoltage,highestCellVoltage,lastXXminBatHist,ESP.getFreeHeap(),ESP.getHeapFragmentation(),ESP.getMaxFreeBlockSize()
 //      );
-    char temp[1210];
-    snprintf(temp, 1210,
+    char temp[1300];
+    snprintf(temp, 1300,
      "<html><head><title>LandXcape Statistics</title><style>body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }</style><meta http-equiv='Refresh' content='10; url=\\stats'></head><body><h1>LandXcape Statistics</h1><p></p><p>Uptime: %02d days %02d hour %02d min %02d sec</p><p>Time: %02d:%02d:%02d</p>\
       <p>Date: %02d.%02d.%02d</p><p>Computed sunrise approx: %s</p><p>Computed sunset approx: %s</p><p>HasCharged/isCharging: %s/%s   (OnTheWay)Home: (%s)%s</p><p>Weather status: %s %s</p><p>Version: %02lf</p><br><table style='width:450px'><tr><th>Battery:</th></tr><tr><th>Actual voltage: %02lf</th><th>Lowest voltage: %02lf</th>\
       <th>Highest voltage: %02lf</th></tr><tr><th>Cell:</th><th></th><th></th></tr><tr><th>Actual voltage: %02lf</th><th>Lowest voltage: %02lf</th><th>Highest voltage: %02lf</th></tr></table><p></p><p><b>Battery history of the last %02dmin</b></p><img src=\"/BatGraph.svg\"/><p></p><p><b>Memory Information in bytes:</b></p>\
@@ -955,7 +969,7 @@ static void handleAdministration(void){
     char temp[2200];
     snprintf(temp, 2200,
      "<html><head><title>LandXcape</title><style>body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088;}</style></head><body><h1>LandXcape Administration Site</h1><p></p><form method='POST' action='/newAdminConfiguration'>Battery history: Show <input type='number' name='batHistMinShown' value='%02d'  min=60 max=600> minutes<br>\
-      Activate function \"Go Home Early\" <input type='checkbox' name='goHomeEarly' %s ><br>If activated, send LandXcape home at: <input type='number' name='batVol' value='%02d' min=16 max=20> V <input type='number' name='batMiliVolt' value='%03d' min=000 max=999>mV<br>If not activated, this value is used to define the battery voltage <br> where no new round of mowing should be started before charging again.<br>\
+      Activate function \"Go Home Early\" <input type='checkbox' name='goHomeEarly' %s ><br>If activated, send LandXcape home at: <input type='number' name='batVol' value='%02d' min=0 max=20> V <input type='number' name='batMiliVolt' value='%03d' min=000 max=999>mV<br>If not activated, this value is used to define the battery voltage <br> where no new round of mowing should be started before charging again.<br>\
       <br>Activate function \"Mowing from sunrise to sunset\" <input type='checkbox' name='allDayMowing_' %s ><br><br>Activate function \"Mowing from <input type='time' name='startTime' value='%02d:%02d'> to <input type='time' name='endTime' value='%02d:%02d'> \" <input type='checkbox' name='fromToMowing_' %s ><br>This function deactivates \"Mowing from sunrise to sunset\" if set.<br><br>\
       Forward rain information to LandXcape to trigger original behavior <input type='checkbox' name='forwardRainInfo_' %s ><br><br>Ignore rain - just mow nevertheless if it rains or not <input type='checkbox' name='ignoreRain_' %s ><br><br>FileSystem Functions: <br>Format FileSystem <b>ATTENTION All persistent Data will be lost ATTENTION</b> <input type='checkbox' name='formatFlashStorage'><br>\
       This must be done once before the filesystem can be used.<br>Will take about 60Seconds<br><br><input type='submit' value='Submit'></form><form method='POST' action='/'><button type='submit'>Cancel</button></form><p></p><br><table style='width:450px'><tr><th><form method='POST' action='/updateLandXcape'><button type='submit'>SW Update via WLAN</button></form></th>\
@@ -1467,6 +1481,7 @@ static void handleWebUpdateHelperFunction (void){
 
 /**
  * batterVoltageHistory helper function to store battery values (max 600 entries <->maxBatHistValues)
+ * && to set the newRoundIsOkay variable based on ig earlyGoHome == false or not and therefore the values are used for new rounds to start
  */
 
 static void storeBatVoltHistory (double actualBatVolt){
@@ -1479,6 +1494,13 @@ static void storeBatVoltHistory (double actualBatVolt){
   }
   
   batVoltHistCounter++;
+
+  if(earlyGoHome==false && actualBatVolt <= earlyGoHomeVolt){
+    newRoundIsOkay = false;
+  }else{
+    newRoundIsOkay = true;
+  }
+  
 }
 
 /**
@@ -1705,8 +1727,7 @@ static void checkBatValues(void){
     writeDebugMessageToInternalLog((String)"[checkBatValues]earlyGoHomeVolt:"+earlyGoHomeVolt+" batteryVoltage"+batteryVoltage + " at local time:"+hour()+":"+minute()+":"+second()+" " + year());
   }
     if (earlyGoHomeVolt>=batteryVoltage){
-      robiOnTheWayHome = true;
-      return;
+      newRoundIsOkay = false;
     }
     //compare current battery volt value against value 3minutes and then if positive 5 minutes ago to exclude high value during driving downwards or on even ground when before climbing has occured
     //to prevent gcc behavior as described above... sigh
@@ -1806,6 +1827,20 @@ static void changeUTCtoLocalTime(void){
  */ 
  static void writeDebugMessageToInternalLog(String tmp){
 
+  if(writeDebugMessageToInternalStorage(tmp)==true){ //If we can write to the internal storage, then quit here after storing the log in the internal FS storage
+    return;
+  }
+
+  if (debugMode>=1){
+          Serial.println((String)"[writeDebugMessageToInternalLog] called from internal RAM and not the FS!");
+          writeDebugMessageToInternalLog((String)"[writeDebugMessageToInternalLog] called from internal RAM and not the FS!");
+  }
+  //since storing within the internal FS does not work, check if the Array has been initialized already and if not do it
+ if(logRotateBufferAvailable==false){
+    logRotateBuffer [maxLogEntries][maxLogLength];
+    boolean logRotateBufferAvailable = true;
+  }
+
   if (logRotateCounter<=0){
     logRotateCounter=maxLogEntries-1; // 0 to 399 = 400 entries for example
   }
@@ -1822,6 +1857,10 @@ static void changeUTCtoLocalTime(void){
   * presentLogEntriesFromInternalLog - shows the last stored log entries via a website for remote debugging from RAM
   */
 static void presentLogEntriesFromInternalLog(void){
+
+  if (presentLogEntriesFromInternalStorage()==true){ //if we can present the internal stored logFiles from the FS then we are finished
+    return;
+  }
 
   int counter = ((logRotateCounter+1)%maxLogEntries); //to get the latest entry
 
@@ -1900,8 +1939,8 @@ static boolean getRainSensorStatus(void){
   for(int i=0;i<10;i++){
     amountOfPositiveRainValues= amountOfPositiveRainValues + rainSensorResults[i];
   }
-
-  if (amountOfPositiveRainValues<=1){
+  
+  if (amountOfPositiveRainValues<=8){ //negative logic 1 if no rain 0 if rain
     if (debugMode>=2){
             Serial.println((String)"[getRainSensorStatus]Result: It Rains - "+amountOfPositiveRainValues);
             writeDebugMessageToInternalLog((String)"[getRainSensorStatus]Result: It Rains - "+amountOfPositiveRainValues);
@@ -1936,6 +1975,75 @@ static boolean getRainSensorStatus(void){
 
   return true;
  }
+
+ /**
+ * writeDebugMessageToInternalStorage - stores the last debug messages in an internal storage on the FileSystem
+ */ 
+ static boolean writeDebugMessageToInternalStorage(String tmp){
+
+  if (debugMode>=2){
+          Serial.println("[writeDebugMessageToInternalStorage]writeDebugMessageToInternalStorage has been triggered...");
+          writeDebugMessageToInternalLog((String)"[writeDebugMessageToInternalStorage]writeDebugMessageToInternalStorage has been triggered...");
+  }
+
+  //open file at FileSystem
+  File myLogs = SPIFFS.open(logFile,"a");
+  if(!myLogs){ //check if we have been able to open/create the file, if not abort
+      if (debugMode>=1){
+          Serial.println("[writeDebugMessageToInternalStorage]logFiles.txt file creation failed. Aborting...");
+          writeDebugMessageToInternalLog((String)"[writeDebugMessageToInternalStorage]logFiles.txt file creation failed. Aborting...");
+      }
+      return false;   
+  }
+  int fileSize = myLogs.size();
+  Serial.print("FileSize:");Serial.println(fileSize);
+  
+  if(fileSize=0){ //new File so initialize it - Should never happen!
+    //write initial part for viewing the logfile via web browser
+    myLogs.println("<html><head><title>LandXcape - WEMOS - Debug Entries</title><style>body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }</style></head><body><h1>LandXcape - WEMOS - Debug Entries</h1><p></p><table style='width:450px'><tr><th><form method='POST' action='/logFiles'><button type='submit'>Reload</button></form></th><th><form method='POST' action='/configure'><button type='submit'>Exit</button></form></th>\</tr></table><br>");
+    if (debugMode>=1){
+        Serial.println("[writeDebugMessageToInternalStorage]logFiles.txt file newly created - this should never happen!...");
+        writeDebugMessageToInternalLog((String)"[writeDebugMessageToInternalStorage]logFiles.txt file newly created - this should never happen!...");
+    }
+  }
+
+  //write initial part of the SVG
+  myLogs.println(tmp+"<br>");
+  myLogs.close();
+  return true;
+ }
+
+ /**
+  * presentLogEntriesFromInternalStorage - shows all existing stored log entries via a website for remote debugging from the internal storage on the FS.
+  * A Wemos Reset does no longer delete the logs!
+  */
+static boolean presentLogEntriesFromInternalStorage(void){
+
+//  //stream the file :D
+//  wwwserver.streamFile(batGraphFile, "image/svg+xml");
+//
+//  batGraphFile.close();
+
+File myLogs = SPIFFS.open(logFile,"r");
+  if(!myLogs){ //check if we have been able to open/create the file, if not abort
+      if (debugMode>=1){
+          Serial.println("[writeDebugMessageToInternalStorage]logFiles.txt file creation failed. Aborting...");
+          writeDebugMessageToInternalLog((String)"[writeDebugMessageToInternalStorage]logFiles.txt file creation failed. Aborting...");
+      }
+      return false;   
+  }
+  //stream the File :D
+  wwwserver.streamFile(myLogs,"text/html");
+  myLogs.close();
+                    
+  //@toDo    tmp = tmp + "</body></html>"; at the end and remove before new entry
+   
+  if (debugMode>=2){
+          Serial.println((String)"[presentLogEntriesFromInternalStorage]presentLogEntries called and executed.");
+          writeDebugMessageToInternalLog((String)"[presentLogEntriesFromInternalStorage]presentLogEntries called and executed.");
+  }
+  return true;
+}
 
  /**
  * writeWebServerFiles - to save RAM all sites will be written during the setup mode to the flash memory and furthermore only streamed to clients without using the RAM
