@@ -21,16 +21,11 @@ int debugMode = 1; //0 = off, 1 = moderate debug messages, 2 = all debug message
 boolean onBoardLED = false; //(de)activates the usage of the onboard LED
 
 boolean NTPUpdateSuccessful = false;
-double version = 0.680201; //LogFiles are now automatically shortend based on the compiled Variable logFileSplitSize (which is currently set to 9kb) -> meaning log file grows up to 11kb and is then shortend to 9kb and so on
-//Bin File: ESP8266 Arduino Board Config updated to 2.7.0
-//Internal: Moved back to readable hmtl sites within code (enough ram availble)
-//System: LogFiles reworked for better readablity with a uniform timeStamp at the beginning
-//BugFix: Starting Robi although not within the given Mow from to timeframe
-//Sensor readings: Reduced to 70 to take the smallest one -> see bug: https://github.com/esp8266/Arduino/issues/2070
-//Sensor readings: Update frequency set to every 3 sec instead of previous 5 sec
+double version = 0.680301; //Bug: Small "Textual" BugFix - FromTo Time was not shown in the log files but instead that the action was not successfull although it was
 
 int lastReadingSec=0;
 int lastReadingMin=0;
+int currentTimeForLog_=0;
 
 int buttonPressTime = 500; //in ms
 int PWRButtonPressTime = 1700; // in ms
@@ -131,7 +126,9 @@ const char* tmpLogFile = "/data/tmpFile.txt";
  * Initialization process - setup ()
  */
 void setup() {
-
+  //Prework
+  currentTimeForLog_ = second();
+  
   //initialize filesystem
   fs::SPIFFSConfig filesystem_cfg; // to overcome the current SPIFFS "bug" in 2.5.2
   filesystem_cfg.setAutoFormat(false);
@@ -991,7 +988,7 @@ static void computeNewAdminConfig(void){
       
       if (toEndTimeHour<fromStartTimeHour || (toEndTimeHour==fromStartTimeHour && toEndTimeMin<=fromStartTimeMin)){
         Serial.println((String)"[computeNewAdminConfig]MowingFromTo: Endtime("+toEndTimeHour+":"+toEndTimeMin+") before Starttime("+fromStartTimeHour+":"+fromStartTimeMin+") or invalid, therfore ignoring.");
-        writeDebugMessageToInternalLog((String)"[computeNewAdminConfig]MowingFromTo: Endtime before Starttime or invalid, therfore ignoring.");
+        writeDebugMessageToInternalLog((String)"[computeNewAdminConfig]MowingFromTo: Endtime("+toEndTimeHour+":"+toEndTimeMin+") before Starttime("+fromStartTimeHour+":"+fromStartTimeMin+") or invalid, therfore ignoring.");
         fromToMowing=false;
       }else{
         //deactivate allDayMowing if it has been set as well
@@ -1051,7 +1048,7 @@ static void computeNewAdminConfig(void){
       Serial.println((String)currentTimeForLog()+"Mow from sunrise to Sunset Function:"+allDayMowing);
       writeDebugMessageToInternalLog((String)currentTimeForLog()+"Mow from sunrise to Sunset Function:"+allDayMowing);
       Serial.println((String)currentTimeForLog()+"From Starttime("+fromStartTimeHour+":"+fromStartTimeMin+") to Endtime("+toEndTimeHour+":"+toEndTimeMin+") function activated:"+fromToMowing);
-      writeDebugMessageToInternalLog((String)currentTimeForLog()+"Endtime before Starttime or invalid, therfore ignoring.");
+      writeDebugMessageToInternalLog((String)currentTimeForLog()+"From Starttime("+fromStartTimeHour+":"+fromStartTimeMin+") to Endtime("+toEndTimeHour+":"+toEndTimeMin+") function activated:"+fromToMowing);
       Serial.println((String)currentTimeForLog()+"Flash storage shall be formated:"+formatFlashStorage);
       writeDebugMessageToInternalLog((String)currentTimeForLog()+"MFlash storage shall be formated:"+formatFlashStorage);
     }
@@ -2014,7 +2011,7 @@ File myLogs = SPIFFS.open(logFile,"r");
  * currentTimeForLog - gives back the current time as a String for the logFiles
  */
  static String currentTimeForLog(){
-  if (second()==lastReadingSec){
+  if (second()==currentTimeForLog_){
     return currentTime;
   }else{
     String hour_ = (String)hour();
